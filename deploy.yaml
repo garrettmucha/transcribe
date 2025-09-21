@@ -44,18 +44,60 @@ services:
           readOnly: false
 
   api:
-    image: ghcr.io/your-org/transcribe-akash:latest
+    image: python:3.11-slim
     env:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - PIP_NO_CACHE_DIR=1
+      - GITHUB_PAT=__REPLACE_WITH_GITHUB_PAT__
+      - GIT_REPO=https://github.com/garrettmucha/transcribe.git
+      - GIT_REF=main
       - DATABASE_URL=postgresql+asyncpg://transcribe_user:transcribe_pass@postgres:5432/transcribe_db
       - REDIS_URL=redis://redis:6379
       - STORAGE_ROOT=/storage
       - MODELS_DIR=/models
+      - WHISPER_CACHE_DIR=/models
+      - TEMP_DIR=/tmp/transcribe
       - PROMETHEUS_ENABLE=true
       - FILE_RETENTION_DAYS=30
       - MONTHLY_CAP_MIN=100
       - MAX_DURATION_MIN=20
       - MAX_FILE_SIZE_MB=25
       - ENABLE_DIARIZATION=true
+    command:
+      - /bin/sh
+      - -c
+      - |
+          set -eu
+          if [ -z "${GITHUB_PAT:-}" ]; then
+            echo "GITHUB_PAT must be set to clone ${GIT_REPO:-https://github.com/garrettmucha/transcribe.git}" >&2
+            exit 1
+          fi
+          if ! command -v git >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y --no-install-recommends build-essential ffmpeg libsndfile1 git curl
+            rm -rf /var/lib/apt/lists/*
+          fi
+          APP_DIR="/opt/app"
+          REPO_URL="${GIT_REPO:-https://github.com/garrettmucha/transcribe.git}"
+          rm -rf "${APP_DIR}"
+          AUTH_URL="${REPO_URL}"
+          case "${REPO_URL}" in
+            https://*) AUTH_URL="https://${GITHUB_PAT}@${REPO_URL#https://}" ;;
+            http://*) AUTH_URL="http://${GITHUB_PAT}@${REPO_URL#http://}" ;;
+          esac
+          git clone "${AUTH_URL}" "${APP_DIR}"
+          cd "${APP_DIR}"
+          if [ -n "${GIT_REF:-}" ]; then
+            git checkout "${GIT_REF}"
+          fi
+          git remote set-url origin "${REPO_URL}"
+          unset GITHUB_PAT
+          python -m pip install --upgrade pip
+          python -m pip install --no-cache-dir -r requirements.txt
+          export PYTHONPATH="${APP_DIR}"
+          mkdir -p "${MODELS_DIR:-/models}" "${STORAGE_ROOT:-/storage}" "${TEMP_DIR:-/tmp/transcribe}"
+          exec uvicorn app.main:app --host 0.0.0.0 --port 8000
     expose:
       - port: 8000
         proto: tcp
@@ -74,19 +116,55 @@ services:
       - service: redis
 
   worker:
-    image: ghcr.io/your-org/transcribe-akash:latest
-    command:
-      - celery
-      - -A
-      - celery_main:celery_app
-      - worker
-      - --loglevel=info
+    image: python:3.11-slim
     env:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - PIP_NO_CACHE_DIR=1
+      - GITHUB_PAT=__REPLACE_WITH_GITHUB_PAT__
+      - GIT_REPO=https://github.com/garrettmucha/transcribe.git
+      - GIT_REF=main
       - DATABASE_URL=postgresql+asyncpg://transcribe_user:transcribe_pass@postgres:5432/transcribe_db
       - REDIS_URL=redis://redis:6379
       - STORAGE_ROOT=/storage
       - MODELS_DIR=/models
+      - WHISPER_CACHE_DIR=/models
+      - TEMP_DIR=/tmp/transcribe
       - FILE_RETENTION_DAYS=30
+    command:
+      - /bin/sh
+      - -c
+      - |
+          set -eu
+          if [ -z "${GITHUB_PAT:-}" ]; then
+            echo "GITHUB_PAT must be set to clone ${GIT_REPO:-https://github.com/garrettmucha/transcribe.git}" >&2
+            exit 1
+          fi
+          if ! command -v git >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y --no-install-recommends build-essential ffmpeg libsndfile1 git curl
+            rm -rf /var/lib/apt/lists/*
+          fi
+          APP_DIR="/opt/app"
+          REPO_URL="${GIT_REPO:-https://github.com/garrettmucha/transcribe.git}"
+          rm -rf "${APP_DIR}"
+          AUTH_URL="${REPO_URL}"
+          case "${REPO_URL}" in
+            https://*) AUTH_URL="https://${GITHUB_PAT}@${REPO_URL#https://}" ;;
+            http://*) AUTH_URL="http://${GITHUB_PAT}@${REPO_URL#http://}" ;;
+          esac
+          git clone "${AUTH_URL}" "${APP_DIR}"
+          cd "${APP_DIR}"
+          if [ -n "${GIT_REF:-}" ]; then
+            git checkout "${GIT_REF}"
+          fi
+          git remote set-url origin "${REPO_URL}"
+          unset GITHUB_PAT
+          python -m pip install --upgrade pip
+          python -m pip install --no-cache-dir -r requirements.txt
+          export PYTHONPATH="${APP_DIR}"
+          mkdir -p "${MODELS_DIR:-/models}" "${STORAGE_ROOT:-/storage}" "${TEMP_DIR:-/tmp/transcribe}"
+          exec celery -A celery_main:celery_app worker --loglevel=info
     params:
       storage:
         storage:
