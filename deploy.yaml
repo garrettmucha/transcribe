@@ -1,3 +1,4 @@
+---
 version: "2.0"
 
 services:
@@ -10,7 +11,6 @@ services:
       - PGDATA=/var/lib/postgresql/data/pgdata
     expose:
       - port: 5432
-        as: 5432
         proto: tcp
         to:
           - service: api
@@ -33,7 +33,6 @@ services:
       - "allkeys-lru"
     expose:
       - port: 6379
-        as: 6379
         proto: tcp
         to:
           - service: api
@@ -59,7 +58,6 @@ services:
       - ENABLE_DIARIZATION=true
     expose:
       - port: 8000
-        as: 8000
         proto: tcp
         to:
           - service: traefik
@@ -71,9 +69,9 @@ services:
         models:
           mount: /models
           readOnly: false
-    depends_on:
-      - postgres
-      - redis
+    depends-on:
+      - service: postgres
+      - service: redis
 
   worker:
     image: ghcr.io/your-org/transcribe-akash:latest
@@ -97,9 +95,9 @@ services:
         models:
           mount: /models
           readOnly: false
-    depends_on:
-      - postgres
-      - redis
+    depends-on:
+      - service: postgres
+      - service: redis
 
   traefik:
     image: traefik:v2.10
@@ -122,51 +120,75 @@ services:
           [http.services.backend.loadBalancer]
             [[http.services.backend.loadBalancer.servers]]
               url = "http://api:8000"
-    depends_on:
-      - api
+    depends-on:
+      - service: api
 
 profiles:
   compute:
     postgres:
       resources:
         cpu:
-          units: 2000
+          units: 2
         memory:
           size: 4Gi
         storage:
-          size: 1Gi
+          - size: 1Gi
+          - name: data
+            size: 50Gi
+            attributes:
+              persistent: true
     redis:
       resources:
         cpu:
-          units: 500
+          units: 0.5
         memory:
           size: 2Gi
         storage:
-          size: 1Gi
+          - size: 1Gi
+          - name: redis-data
+            size: 5Gi
+            attributes:
+              persistent: true
     api:
       resources:
         cpu:
-          units: 4000
+          units: 4
         memory:
           size: 8Gi
         storage:
-          size: 1Gi
+          - size: 1Gi
+          - name: storage
+            size: 100Gi
+            attributes:
+              persistent: true
+          - name: models
+            size: 20Gi
+            attributes:
+              persistent: true
     worker:
       resources:
         cpu:
-          units: 8000
+          units: 8
         memory:
           size: 16Gi
         storage:
-          size: 1Gi
+          - size: 1Gi
+          - name: storage
+            size: 100Gi
+            attributes:
+              persistent: true
+          - name: models
+            size: 20Gi
+            attributes:
+              persistent: true
     traefik:
       resources:
         cpu:
-          units: 500
+          units: 0.5
         memory:
           size: 1Gi
         storage:
-          size: 512Mi
+          - size: 512Mi
   placement:
     akash:
       attributes:
@@ -190,43 +212,24 @@ profiles:
         traefik:
           denom: uakt
           amount: 500
-  storage:
-    storage:
-      size: 100Gi
-    models:
-      size: 20Gi
-    data:
-      size: 50Gi
-    redis-data:
-      size: 5Gi
 
 deployment:
   postgres:
     akash:
       profile: postgres
       count: 1
-      storage:
-        data: data
   redis:
     akash:
       profile: redis
       count: 1
-      storage:
-        redis-data: redis-data
   api:
     akash:
       profile: api
       count: 1
-      storage:
-        storage: storage
-        models: models
   worker:
     akash:
       profile: worker
       count: 1
-      storage:
-        storage: storage
-        models: models
   traefik:
     akash:
       profile: traefik
