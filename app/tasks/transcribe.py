@@ -373,7 +373,7 @@ async def _cleanup_expired_files_async() -> Dict[str, Any]:
     from sqlalchemy import select
     
     try:
-        retention_days = int(os.getenv("FILE_RETENTION_DAYS", "7"))
+        retention_days = int(os.getenv("FILE_RETENTION_DAYS", "30"))
         cutoff_date = datetime.utcnow() - timedelta(days=retention_days)
         
         storage = StorageService()
@@ -398,8 +398,7 @@ async def _cleanup_expired_files_async() -> Dict[str, Any]:
                     if job.output_uri_prefix:
                         output_files = await storage.list_files(job.output_uri_prefix)
                         for file_key in output_files:
-                            full_uri = f"s3://{os.getenv('S3_BUCKET')}/{file_key}"
-                            await storage.delete_file(full_uri)
+                            await storage.delete_file(file_key)
                     
                     # Mark job as cleaned (or delete record)
                     job.input_uri = None

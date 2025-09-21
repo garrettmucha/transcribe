@@ -4,14 +4,14 @@ Rate limiting using Redis token bucket and semaphores.
 
 import os
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Tuple
 
 import redis.asyncio as redis
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import UsageDaily, Job, JobStatus
+from app.models import Job, JobStatus, UsageMonthly
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -21,8 +21,8 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
 # Rate limit configuration
-TOKEN_BUCKET_SIZE = int(os.getenv("RATE_LIMIT_BURST", "15"))
-TOKEN_REFILL_RATE = int(os.getenv("RATE_LIMIT_RATE", "1"))  # tokens per minute
+TOKEN_BUCKET_SIZE = int(os.getenv("RATE_LIMIT_BURST", "10"))
+TOKEN_REFILL_RATE = int(os.getenv("RATE_LIMIT_RATE", "10"))  # tokens per minute
 CONCURRENT_JOB_LIMIT = int(os.getenv("CONCURRENT_JOB_LIMIT", "1"))
 
 
@@ -45,24 +45,25 @@ async def check_rate_limit(identity_id: str) -> Tuple[bool, int]:
         
         current_tokens = int(results[0] or TOKEN_BUCKET_SIZE)
         last_refill = float(results[1] or current_time)
-        
+
         # Calculate tokens to add based on time elapsed
         time_elapsed = current_time - last_refill
         tokens_to_add = int(time_elapsed / 60.0 * TOKEN_REFILL_RATE)  # Rate per minute
-        
+
         # Update token count
-        new_tokens = min(TOKEN_BUCKET_SIZE, current_tokens + tokens_to_add)
-        
+        bucket_capacity = max(TOKEN_BUCKET_SIZE, current_tokens)
+        new_tokens = min(bucket_capacity, current_tokens + tokens_to_add)
+
         if new_tokens >= 1:
             # Allow request, consume token
             new_tokens -= 1
-            
+
             # Update Redis
             pipe = redis_client.pipeline()
             pipe.set(token_key, new_tokens, ex=3600)  # 1 hour expiry
             pipe.set(timestamp_key, current_time, ex=3600)
             await pipe.execute()
-            
+
             return True, new_tokens
         else:
             # Rate limited
@@ -74,30 +75,35 @@ async def check_rate_limit(identity_id: str) -> Tuple[bool, int]:
         return True, TOKEN_BUCKET_SIZE
 
 
-async def check_concurrent_limit(identity_id: str) -> bool:
+async def check_concurrent_limit(identity_id: str) -> Tuple[bool, int]:
     """
-    Check concurrent job limit using Redis semaphore.
+    Check concurrent job limit using a Redis-backed semaphore.
+
+    Returns a tuple of (allowed: bool, remaining_slots: int).
+    The remaining slot count reflects how many jobs the identity can
+    still enqueue after the current request is admitted.
     """
     try:
         semaphore_key = f"concurrent:{identity_id}"
-        
+
         # Try to acquire semaphore
-        current_count = await redis_client.get(semaphore_key)
-        current_count = int(current_count or 0)
-        
+        current_count_raw = await redis_client.get(semaphore_key)
+        current_count = int(current_count_raw or 0)
+
         if current_count >= CONCURRENT_JOB_LIMIT:
-            return False
-        
+            return False, 0
+
         # Increment semaphore
-        await redis_client.incr(semaphore_key)
+        updated = await redis_client.incr(semaphore_key)
         await redis_client.expire(semaphore_key, 1800)  # 30 minute expiry
-        
-        return True
-        
+
+        remaining_slots = max(CONCURRENT_JOB_LIMIT - updated, 0)
+        return True, remaining_slots
+
     except Exception as e:
         logger.error(f"Concurrent limit check failed for {identity_id}: {e}")
         # Fail open
-        return True
+        return True, CONCURRENT_JOB_LIMIT
 
 
 async def release_concurrent_limit(identity_id: str):
@@ -110,46 +116,39 @@ async def release_concurrent_limit(identity_id: str):
         # Decrement semaphore
         current = await redis_client.get(semaphore_key)
         if current and int(current) > 0:
-            await redis_client.decr(semaphore_key)
-            
+            updated = await redis_client.decr(semaphore_key)
+            if updated <= 0:
+                await redis_client.delete(semaphore_key)
+
     except Exception as e:
         logger.error(f"Failed to release concurrent limit for {identity_id}: {e}")
 
 
-async def check_daily_usage_limit(
-    identity_id: str, 
-    duration_minutes: float, 
-    daily_limit_minutes: int,
-    db: AsyncSession
+async def check_monthly_usage_limit(
+    identity_id: str,
+    duration_minutes: float,
+    monthly_limit_minutes: int,
+    db: AsyncSession,
 ) -> Tuple[bool, float]:
-    """
-    Check daily usage limit against database records.
-    Returns (allowed, remaining_minutes).
-    """
+    """Check monthly usage limit and return allowance status."""
+
     try:
-        today = date.today()
-        
-        # Get today's usage
-        stmt = select(UsageDaily).where(
-            UsageDaily.identity_id == identity_id,
-            UsageDaily.date == today
+        month_start = date.today().replace(day=1)
+        stmt = select(UsageMonthly).where(
+            UsageMonthly.identity_id == identity_id,
+            UsageMonthly.month == month_start,
         )
         result = await db.execute(stmt)
-        usage_record = result.scalar_one_or_none()
-        
-        current_usage = usage_record.minutes_used if usage_record else 0.0
-        remaining_minutes = daily_limit_minutes - current_usage
-        
-        # Check if new request would exceed limit
-        if current_usage + duration_minutes > daily_limit_minutes:
-            return False, remaining_minutes
-        
-        return True, remaining_minutes
-        
-    except Exception as e:
-        logger.error(f"Daily usage check failed for {identity_id}: {e}")
-        # Fail open with conservative remaining estimate
-        return True, daily_limit_minutes / 2
+        record = result.scalar_one_or_none()
+
+        current_minutes = record.minutes_used if record else 0.0
+        remaining = monthly_limit_minutes - current_minutes
+        if current_minutes + duration_minutes > monthly_limit_minutes:
+            return False, remaining
+        return True, remaining
+    except Exception as exc:
+        logger.error("Monthly usage lookup failed", error=str(exc))
+        return True, monthly_limit_minutes / 2
 
 
 async def record_usage(
@@ -157,56 +156,43 @@ async def record_usage(
     duration_minutes: float,
     bytes_in: int,
     bytes_out: int,
-    db: AsyncSession
+    db: AsyncSession,
 ):
-    """
-    Record usage in daily tracking table.
-    """
+    """Record usage into the monthly quota table."""
     try:
-        today = date.today()
-        
-        # Get or create usage record
-        stmt = select(UsageDaily).where(
-            UsageDaily.identity_id == identity_id,
-            UsageDaily.date == today
+        month_start = date.today().replace(day=1)
+        stmt = select(UsageMonthly).where(
+            UsageMonthly.identity_id == identity_id,
+            UsageMonthly.month == month_start,
         )
         result = await db.execute(stmt)
         usage_record = result.scalar_one_or_none()
-        
+
         if usage_record:
-            # Update existing record
             usage_record.minutes_used += duration_minutes
             usage_record.files += 1
             usage_record.bytes_in += bytes_in
             usage_record.bytes_out += bytes_out
             usage_record.last_updated_at = datetime.utcnow()
         else:
-            # Create new record
-            usage_record = UsageDaily(
+            usage_record = UsageMonthly(
                 identity_id=identity_id,
-                date=today,
+                month=month_start,
                 minutes_used=duration_minutes,
                 files=1,
                 bytes_in=bytes_in,
                 bytes_out=bytes_out,
-                last_updated_at=datetime.utcnow()
+                last_updated_at=datetime.utcnow(),
             )
             db.add(usage_record)
-        
+
         await db.commit()
-        
-        # Also update Redis cache for faster lookups
-        cache_key = f"usage:{identity_id}:{today.isoformat()}"
-        await redis_client.set(
-            cache_key, 
-            usage_record.minutes_used, 
-            ex=86400  # 24 hours
-        )
-        
-        logger.debug(f"Usage recorded for {identity_id}: +{duration_minutes:.2f} minutes")
-        
-    except Exception as e:
-        logger.error(f"Failed to record usage for {identity_id}: {e}")
+        cache_key = f"usage:{identity_id}:{month_start.isoformat()}"
+        await redis_client.set(cache_key, usage_record.minutes_used, ex=31 * 24 * 3600)
+        logger.debug("Usage recorded", identity=identity_id, minutes=duration_minutes)
+
+    except Exception as exc:
+        logger.error("Failed to record usage", error=str(exc), identity=identity_id)
         await db.rollback()
 
 
