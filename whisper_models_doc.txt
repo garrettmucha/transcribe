@@ -1,0 +1,330 @@
+# 🎤 Whisper Model Management
+
+Complete guide to Whisper model sources, caching, and optimization.
+
+## 📍 Model Sources
+
+### Hugging Face Hub (Default)
+
+**faster-whisper** automatically downloads models from Hugging Face Hub:
+
+| Model | Repository | Size | Download URL |
+|-------|------------|------|--------------|
+| **tiny** | `guillaumekln/faster-whisper-tiny` | ~39MB | Auto-download |
+| **small** | `guillaumekln/faster-whisper-small` | ~244MB | Auto-download |
+| **medium** | `guillaumekln/faster-whisper-medium` | **~769MB** | **Default** |
+| **large** | `guillaumekln/faster-whisper-large` | ~1550MB | Auto-download |
+
+### Model Format
+- **CTranslate2 format**: Optimized for CPU inference
+- **Quantized**: INT8 for faster CPU processing
+- **Compressed**: Smaller than original OpenAI models
+
+## 💾 Model Caching
+
+### Cache Locations
+
+| Environment | Cache Directory | Configurable Via |
+|-------------|-----------------|------------------|
+| **Local Docker** | `/root/.cache/huggingface/hub/` | `HF_HOME` |
+| **Akash Deployment** | `/models/` | `WHISPER_CACHE_DIR` |
+| **Development** | `~/.cache/huggingface/hub/` | `HF_HOME` |
+
+### Environment Variables
+
+```bash
+# Custom cache location
+WHISPER_CACHE_DIR=/path/to/models
+HF_HOME=/path/to/models
+
+# Hugging Face settings
+HF_HUB_OFFLINE=false           # Set true for offline mode
+HUGGINGFACE_HUB_CACHE=/models  # Alternative cache location
+```
+
+## 🚀 Deployment Strategies
+
+### 1. **Pre-download in Container** (Recommended)
+
+Models are downloaded during Docker build:
+
+```dockerfile
+# In Dockerfile.akash
+RUN python -c "
+from faster_whisper import WhisperModel
+print('Downloading small model (~244MB)...')
+WhisperModel('small', device='cpu', compute_type='int8', download_root='/models')
+print('Downloading medium model (~769MB)...')
+WhisperModel('medium', device='cpu', compute_type='int8', download_root='/models')
+"
+```
+
+**Pros**:
+- ✅ No startup delay
+- ✅ Works offline after build
+- ✅ Consistent performance
+- ✅ Reduces container startup time
+
+**Cons**:
+- ❌ Larger container image (~1GB)
+- ❌ Longer build time
+- ❌ Fixed model versions
+
+### 2. **Runtime Download** (Default behavior)
+
+Models downloaded on first use:
+
+```python
+# First time this runs, downloads ~769MB
+model = WhisperModel("medium", device="cpu", compute_type="int8")
+```
+
+**Pros**:
+- ✅ Smaller container image
+- ✅ Always latest model version
+- ✅ Flexible model selection
+
+**Cons**:
+- ❌ First request has ~2-5 minute delay
+- ❌ Requires internet connectivity
+- ❌ Network usage on startup
+
+### 3. **Persistent Volume** (Akash/Production)
+
+Models cached in persistent storage:
+
+```yaml
+# In Akash deploy.yaml
+params:
+  storage:
+    models:
+      mount: /models
+      readOnly: false  # Shared between API and worker
+```
+
+**Pros**:
+- ✅ Models persist between deployments
+- ✅ Shared cache between services
+- ✅ Startup delay only on first deployment
+
+**Cons**:
+- ❌ Requires persistent storage configuration
+- ❌ Additional storage costs
+
+## 📊 Performance Impact
+
+### Download Times (approximate)
+
+| Model | Size | Download Time | First Startup Delay |
+|-------|------|---------------|-------------------|
+| **tiny** | 39MB | 10-30 seconds | 15-45 seconds |
+| **small** | 244MB | 1-2 minutes | 1-3 minutes |
+| **medium** | 769MB | 2-5 minutes | 3-7 minutes |
+| **large** | 1550MB | 5-10 minutes | 6-12 minutes |
+
+*Times vary based on internet connection speed*
+
+### Memory Usage
+
+| Model | RAM Usage | Recommended RAM |
+|-------|-----------|-----------------|
+| **tiny** | ~1GB | 2GB+ |
+| **small** | ~2GB | 4GB+ |
+| **medium** | ~5GB | 8GB+ |
+| **large** | ~10GB | 16GB+ |
+
+## 🔧 Configuration Options
+
+### Model Selection
+
+```python
+# Environment variable
+WHISPER_MODEL=medium  # tiny, small, medium, large
+
+# Runtime selection
+processor = AudioProcessor()
+processor.whisper_model_name = "small"  # Override default
+```
+
+### Cache Management
+
+```python
+# Custom cache directory
+WHISPER_CACHE_DIR=/custom/path/to/models
+
+# Offline mode (use cached models only)
+HF_HUB_OFFLINE=true
+```
+
+### Fallback Strategy
+
+Our implementation includes automatic fallback:
+
+```python
+# 1. Try medium model
+try:
+    model = WhisperModel("medium", ...)
+except:
+    # 2. Fallback to small model
+    model = WhisperModel("small", ...)
+```
+
+## 🌐 Network Requirements
+
+### Bandwidth Usage
+
+| Scenario | Data Usage | Frequency |
+|----------|------------|-----------|
+| **First deployment** | 769MB (medium) | One-time |
+| **Container restart** | 0MB (if persistent) | Never |
+| **Model update** | 769MB | When model version changes |
+
+### Offline Deployment
+
+For air-gapped environments:
+
+1. **Pre-build with models**:
+   ```bash
+   # Build container with models included
+   docker build -f Dockerfile.akash -t transcribe-offline .
+   ```
+
+2. **Set offline mode**:
+   ```bash
+   HF_HUB_OFFLINE=true
+   WHISPER_CACHE_DIR=/models
+   ```
+
+3. **Transfer container**:
+   ```bash
+   docker save transcribe-offline | gzip > transcribe-offline.tar.gz
+   # Transfer file to target environment
+   docker load < transcribe-offline.tar.gz
+   ```
+
+## 🛠️ Troubleshooting
+
+### Common Issues
+
+**1. Model Download Fails**
+```bash
+# Error: HTTPSConnectionPool... timeout
+# Solution: Check internet connectivity and firewall settings
+curl -I https://huggingface.co/guillaumekln/faster-whisper-medium
+```
+
+**2. Out of Disk Space**
+```bash
+# Error: No space left on device
+# Solution: Check available disk space
+df -h
+# Clean up old models if needed
+rm -rf ~/.cache/huggingface/hub/
+```
+
+**3. Permission Denied**
+```bash
+# Error: Permission denied writing to cache
+# Solution: Fix permissions
+chown -R app:app /models
+chmod 755 /models
+```
+
+**4. Model Loading Timeout**
+```python
+# Error: Model loading takes too long
+# Solution: Increase timeouts or use smaller model
+WHISPER_MODEL=small  # Instead of medium
+```
+
+### Debug Commands
+
+```bash
+# Check model cache
+ls -la ~/.cache/huggingface/hub/
+
+# Check disk usage
+du -sh ~/.cache/huggingface/hub/
+
+# Test model download
+python -c "
+from faster_whisper import WhisperModel
+model = WhisperModel('small', device='cpu', compute_type='int8')
+print('Model loaded successfully')
+"
+
+# Check network connectivity
+curl -I https://huggingface.co/guillaumekln/faster-whisper-small
+```
+
+## 📈 Optimization Strategies
+
+### For Development
+```bash
+# Use small model for faster iteration
+WHISPER_MODEL=small
+ENABLE_DIARIZATION=false
+```
+
+### For Production
+```bash
+# Pre-download in container build
+# Use persistent storage for cache
+# Monitor disk usage
+WHISPER_MODEL=medium
+ENABLE_DIARIZATION=true
+```
+
+### For Budget Deployments
+```bash
+# Use smallest viable model
+WHISPER_MODEL=small
+ENABLE_DIARIZATION=false  # Saves ~2GB RAM
+```
+
+### For High Accuracy
+```bash
+# Use largest model you can afford
+WHISPER_MODEL=large
+ENABLE_DIARIZATION=true
+```
+
+## 🔄 Model Updates
+
+Models are periodically updated on Hugging Face Hub:
+
+### Check for Updates
+```python
+# Models are cached indefinitely unless manually cleared
+# To force update, clear cache:
+rm -rf ~/.cache/huggingface/hub/models--guillaumekln--faster-whisper-medium
+```
+
+### Update Strategy
+1. **Test new models** in development environment
+2. **Rebuild containers** with updated models
+3. **Deploy gradually** to production
+4. **Monitor performance** and accuracy changes
+
+## 🎯 Recommendations
+
+### For Different Use Cases
+
+**Personal/Development**:
+- Model: `small`
+- Strategy: Runtime download
+- Cache: Local (`~/.cache`)
+
+**Startup/Small Business**:
+- Model: `medium`
+- Strategy: Pre-download in container
+- Cache: Persistent volume
+
+**Enterprise/High Volume**:
+- Model: `large`
+- Strategy: Pre-download + persistent cache
+- Cache: High-performance SSD storage
+
+---
+
+**Model management is crucial for performance and cost optimization!** Choose the strategy that best fits your deployment environment and performance requirements.

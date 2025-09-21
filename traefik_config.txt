@@ -1,0 +1,39 @@
+# Traefik dynamic configuration for local development
+
+[http.routers.api]
+  rule = "PathPrefix(`/api`) || PathPrefix(`/docs`) || PathPrefix(`/openapi.json`) || PathPrefix(`/healthz`) || PathPrefix(`/metrics`)"
+  service = "transcribe-api"
+  middlewares = ["api-cors", "api-ratelimit"]
+
+[http.routers.frontend]
+  rule = "PathPrefix(`/`)"
+  service = "transcribe-api"
+  middlewares = ["frontend-cors"]
+
+[http.services.transcribe-api.loadBalancer]
+  [[http.services.transcribe-api.loadBalancer.servers]]
+    url = "http://api:8000"
+
+[http.middlewares.api-cors.headers]
+  accessControlAllowOriginList = ["*"]
+  accessControlAllowMethods = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+  accessControlAllowHeaders = ["*"]
+  accessControlExposeHeaders = ["*"]
+  accessControlAllowCredentials = true
+  accessControlMaxAge = 86400
+
+[http.middlewares.frontend-cors.headers]
+  accessControlAllowOriginList = ["*"]
+  accessControlAllowMethods = ["GET", "POST", "OPTIONS"]
+  accessControlAllowHeaders = ["*"]
+  accessControlAllowCredentials = true
+
+[http.middlewares.api-ratelimit.rateLimit]
+  average = 10
+  burst = 20
+  period = "1m"
+
+# Health check
+[http.routers.healthz]
+  rule = "Path(`/healthz`)"
+  service = "transcribe-api"

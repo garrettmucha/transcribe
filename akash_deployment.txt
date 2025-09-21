@@ -1,0 +1,195 @@
+---
+version: "2.0"
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    env:
+      - POSTGRES_DB=transcribe_db
+      - POSTGRES_USER=transcribe_user
+      - POSTGRES_PASSWORD=transcribe_pass
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    expose:
+      - port: 5432
+        as: 5432
+        to:
+          - service: api
+          - service: worker
+    params:
+      storage:
+        data:
+          mount: /var/lib/postgresql/data
+          readOnly: false
+
+  # Redis Cache & Queue
+  redis:
+    image: redis:7-alpine
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - "256mb"
+      - --maxmemory-policy
+      - "allkeys-lru"
+    expose:
+      - port: 6379
+        as: 6379
+        to:
+          - service: api
+          - service: worker
+    params:
+      storage:
+        data:
+          mount: /data
+          readOnly: false
+
+  # FastAPI Application
+  api:
+    image: ghcr.io/your-username/transcribe-service:latest  # You'll need to build and push this
+    env:
+      - DATABASE_URL=postgresql://transcribe_user:transcribe_pass@postgres:5432/transcribe_db
+      - REDIS_URL=redis://redis:6379
+      - S3_ENDPOINT=https://your-account.r2.cloudflarestorage.com
+      - S3_REGION=auto
+      - S3_BUCKET=transcribe-storage
+      - S3_ACCESS_KEY=your-r2-access-key
+      - S3_SECRET_KEY=your-r2-secret-key
+      - PUBLIC_BASE_URL=https://your-app.akash-domain.com
+      - COOKIE_SIGNING_KEY=your-secret-signing-key-change-in-production
+      - WHISPER_MODEL=medium
+      - ENABLE_DIARIZATION=true
+      - WHISPER_CACHE_DIR=/models
+      - HF_HOME=/models
+      - MAX_DURATION_MIN=15
+      - DAILY_CAP_MIN=10
+      - LOG_LEVEL=INFO
+      - PROMETHEUS_ENABLE=true
+    expose:
+      - port: 8000
+        as: 80
+        to:
+          - global: true
+    depends_on:
+      - postgres
+      - redis
+    params:
+      storage:
+        temp:
+          mount: /tmp/transcribe
+          readOnly: false
+        models:
+          mount: /models
+          readOnly: false
+
+  # Celery Worker
+  worker:
+    image: ghcr.io/your-username/transcribe-service:latest  # Same image, different command
+    env:
+      - DATABASE_URL=postgresql://transcribe_user:transcribe_pass@postgres:5432/transcribe_db
+      - REDIS_URL=redis://redis:6379
+      - S3_ENDPOINT=https://your-account.r2.cloudflarestorage.com
+      - S3_REGION=auto
+      - S3_BUCKET=transcribe-storage
+      - S3_ACCESS_KEY=your-r2-access-key
+      - S3_SECRET_KEY=your-r2-secret-key
+      - WHISPER_MODEL=medium
+      - ENABLE_DIARIZATION=true
+      - WHISPER_CACHE_DIR=/models
+      - HF_HOME=/models
+      - LOG_LEVEL=INFO
+    command:
+      - celery
+      - -A
+      - app.tasks.main
+      - worker
+      - --loglevel=info
+      - --concurrency=1
+      - --queues=free
+    depends_on:
+      - postgres
+      - redis
+    params:
+      storage:
+        temp:
+          mount: /tmp/transcribe
+          readOnly: false
+        models:
+          mount: /models
+          readOnly: false
+
+profiles:
+  compute:
+    api:
+      resources:
+        cpu:
+          units: 2
+        memory:
+          size: 4Gi
+        storage:
+          - size: 10Gi
+            name: temp
+    worker:
+      resources:
+        cpu:
+          units: 4
+        memory:
+          size: 8Gi
+        storage:
+          - size: 5Gi
+            name: temp
+          - size: 5Gi
+            name: models
+    postgres:
+      resources:
+        cpu:
+          units: 1
+        memory:
+          size: 2Gi
+        storage:
+          - size: 20Gi
+            name: data
+    redis:
+      resources:
+        cpu:
+          units: 0.5
+        memory:
+          size: 512Mi
+        storage:
+          - size: 1Gi
+            name: data
+
+  placement:
+    dcloud:
+      pricing:
+        api:
+          denom: uakt
+          amount: 1000
+        worker:
+          denom: uakt
+          amount: 2000
+        postgres:
+          denom: uakt
+          amount: 500
+        redis:
+          denom: uakt
+          amount: 200
+
+deployment:
+  api:
+    dcloud:
+      profile: api
+      count: 1
+  worker:
+    dcloud:
+      profile: worker
+      count: 1
+  postgres:
+    dcloud:
+      profile: postgres
+      count: 1
+  redis:
+    dcloud:
+      profile: redis
+      count: 1

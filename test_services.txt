@@ -1,0 +1,471 @@
+"""
+Tests for service modules.
+"""
+
+import os
+import tempfile
+from unittest.mock import patch, MagicMock, AsyncMock
+
+import pytest
+from botocore.exceptions import ClientError
+
+from app.services.storage import StorageService
+from app.services.audio import AudioProcessor, TextProcessor
+
+
+class TestStorageService:
+    """Tests for StorageService."""
+    
+    def test_init_local_storage(self):
+        """Test initialization with local storage."""
+        with patch.dict(os.environ, {}, clear=True):
+            storage = StorageService()
+            assert storage.use_local is True
+    
+    def test_init_s3_storage(self):
+        """Test initialization with S3 storage."""
+        with patch.dict(os.environ, {
+            'S3_ENDPOINT': 'https://test.r2.cloudflarestorage.com',
+            'S3_BUCKET': 'test-bucket',
+            'S3_ACCESS_KEY': 'test-key',
+            'S3_SECRET_KEY': 'test-secret'
+        }):
+            storage = StorageService()
+            assert storage.use_local is False
+            assert storage.bucket_name == 'test-bucket'
+    
+    @pytest.mark.asyncio
+    async def test_upload_file_local(self, temp_dir):
+        """Test local file upload."""
+        with patch.dict(os.environ, {'LOCAL_STORAGE_PATH': temp_dir}):
+            storage = StorageService()
+            
+            content = b"test file content"
+            key = "test/file.txt"
+            
+            uri = await storage.upload_file(content, key, "text/plain")
+            
+            assert uri.startswith("file://")
+            assert os.path.exists(os.path.join(temp_dir, key))
+            
+            # Verify content
+            with open(os.path.join(temp_dir, key), 'rb') as f:
+                assert f.read() == content
+    
+    @pytest.mark.asyncio
+    async def test_download_file_local(self, temp_dir):
+        """Test local file download."""
+        with patch.dict(os.environ, {'LOCAL_STORAGE_PATH': temp_dir}):
+            storage = StorageService()
+            
+            # Create test file
+            test_content = b"test download content"
+            test_path = os.path.join(temp_dir, "test.txt")
+            os.makedirs(os.path.dirname(test_path), exist_ok=True)
+            with open(test_path, 'wb') as f:
+                f.write(test_content)
+            
+            # Download
+            uri = f"file://{test_path}"
+            content = await storage.download_file(uri)
+            
+            assert content == test_content
+    
+    @pytest.mark.asyncio
+    async def test_upload_file_s3(self):
+        """Test S3 file upload."""
+        with patch.dict(os.environ, {
+            'S3_ENDPOINT': 'https://test.r2.cloudflarestorage.com',
+            'S3_BUCKET': 'test-bucket',
+            'S3_ACCESS_KEY': 'test-key',
+            'S3_SECRET_KEY': 'test-secret'
+        }):
+            storage = StorageService()
+            
+            # Mock S3 client
+            mock_s3_client = MagicMock()
+            storage.s3_client = mock_s3_client
+            
+            content = b"test s3 content"
+            key = "test/s3file.txt"
+            
+            uri = await storage.upload_file(content, key, "text/plain")
+            
+            assert uri == f"s3://{storage.bucket_name}/{key}"
+            mock_s3_client.put_object.assert_called_once()
+    
+    @pytest.mark.asyncio
+    async def test_get_signed_url_local(self, temp_dir):
+        """Test signed URL generation for local storage."""
+        with patch.dict(os.environ, {'LOCAL_STORAGE_PATH': temp_dir}):
+            storage = StorageService()
+            
+            # Create test file
+            test_path = os.path.join(temp_dir, "test.txt")
+            os.makedirs(os.path.dirname(test_path), exist_ok=True)
+            with open(test_path, 'w') as f:
+                f.write("test")
+            
+            url = await storage.get_signed_url("test.txt")
+            assert url == "/storage/test.txt"
+    
+    @pytest.mark.asyncio
+    async def test_delete_file_local(self, temp_dir):
+        """Test local file deletion."""
+        with patch.dict(os.environ, {'LOCAL_STORAGE_PATH': temp_dir}):
+            storage = StorageService()
+            
+            # Create test file
+            test_path = os.path.join(temp_dir, "delete_me.txt")
+            os.makedirs(os.path.dirname(test_path), exist_ok=True)
+            with open(test_path, 'w') as f:
+                f.write("delete me")
+            
+            uri = f"file://{test_path}"
+            success = await storage.delete_file(uri)
+            
+            assert success is True
+            assert not os.path.exists(test_path)
+    
+    @pytest.mark.asyncio
+    async def test_list_files_local(self, temp_dir):
+        """Test local file listing."""
+        with patch.dict(os.environ, {'LOCAL_STORAGE_PATH': temp_dir}):
+            storage = StorageService()
+            
+            # Create test files
+            files = ["prefix/file1.txt", "prefix/file2.txt", "other/file3.txt"]
+            for file_path in files:
+                full_path = os.path.join(temp_dir, file_path)
+                os.makedirs(os.path.dirname(full_path), exist_ok=True)
+                with open(full_path, 'w') as f:
+                    f.write("test")
+            
+            # List files with prefix
+            result = await storage.list_files("prefix/")
+            assert len(result) == 2
+            assert "prefix/file1.txt" in result
+            assert "prefix/file2.txt" in result
+    
+    @pytest.mark.asyncio
+    async def test_health_check_local(self, temp_dir):
+        """Test health check for local storage."""
+        with patch.dict(os.environ, {'LOCAL_STORAGE_PATH': temp_dir}):
+            storage = StorageService()
+            
+            health = await storage.health_check()
+            assert health["status"] == "healthy"
+            assert health["type"] == "local"
+
+
+class TestAudioProcessor:
+    """Tests for AudioProcessor."""
+    
+    def test_init(self):
+        """Test AudioProcessor initialization."""
+        processor = AudioProcessor()
+        assert processor.whisper_model_name == "small"
+        assert processor.whisper_beam_size == 5
+    
+    @pytest.mark.asyncio
+    async def test_probe_duration(self, sample_audio_file):
+        """Test audio duration probing."""
+        processor = AudioProcessor()
+        
+        with patch('ffmpeg.probe') as mock_probe:
+            mock_probe.return_value = {
+                'streams': [{'duration': '5.5'}]
+            }
+            
+            duration = await processor.probe_duration(sample_audio_file, "test.wav")
+            assert duration == 5.5
+    
+    @pytest.mark.asyncio
+    async def test_probe_duration_invalid_file(self, sample_audio_file):
+        """Test duration probing with invalid file."""
+        processor = AudioProcessor()
+        
+        with patch('ffmpeg.probe') as mock_probe:
+            mock_probe.side_effect = Exception("Invalid file")
+            
+            with pytest.raises(ValueError, match="Invalid audio file"):
+                await processor.probe_duration(sample_audio_file, "invalid.wav")
+    
+    @pytest.mark.asyncio
+    async def test_normalize_audio(self, temp_dir):
+        """Test audio normalization."""
+        processor = AudioProcessor()
+        
+        input_file = os.path.join(temp_dir, "input.wav")
+        output_file = os.path.join(temp_dir, "output.wav")
+        
+        # Create dummy input file
+        with open(input_file, 'wb') as f:
+            f.write(b"fake audio data")
+        
+        with patch('ffmpeg.probe') as mock_probe, \
+             patch('ffmpeg.input') as mock_input, \
+             patch('ffmpeg.output') as mock_output:
+            
+            # Mock ffmpeg chain
+            mock_probe.return_value = {'streams': [{'duration': '10.0'}]}
+            mock_stream = MagicMock()
+            mock_input.return_value = mock_stream
+            mock_stream.output.return_value = mock_stream
+            mock_stream.overwrite_output.return_value = mock_stream
+            mock_stream.run.return_value = None
+            
+            # Create output file for verification
+            with open(output_file, 'wb') as f:
+                f.write(b"normalized audio")
+            
+            duration, metadata = await processor.normalize_audio(input_file, output_file)
+            
+            assert duration == 10.0
+            assert metadata['input_duration'] == 10.0
+            assert metadata['sample_rate'] == 16000
+            assert metadata['channels'] == 1
+    
+    def test_get_whisper_model_with_fallback(self):
+        """Test Whisper model loading with fallback to small model."""
+        processor = AudioProcessor()
+        processor.whisper_model_name = "medium"
+        
+        with patch('faster_whisper.WhisperModel') as mock_model_class:
+            # First call (medium model) fails
+            # Second call (small model) succeeds
+            mock_instance = MagicMock()
+            mock_model_class.side_effect = [Exception("Model not found"), mock_instance]
+            
+            model = processor.get_whisper_model()
+            
+            assert model == mock_instance
+            assert processor.whisper_model_name == "small"  # Should fallback
+            assert mock_model_class.call_count == 2
+    
+    @pytest.mark.asyncio
+    async def test_transcribe_audio_with_diarization(self, temp_dir):
+        """Test audio transcription with speaker diarization."""
+        processor = AudioProcessor()
+        
+        audio_file = os.path.join(temp_dir, "test.wav")
+        with open(audio_file, 'wb') as f:
+            f.write(b"fake audio")
+        
+        # Mock Whisper model
+        mock_model = MagicMock()
+        mock_segment1 = MagicMock()
+        mock_segment1.text = "Hello everyone"
+        mock_segment1.start = 0.0
+        mock_segment1.end = 2.0
+        
+        mock_segment2 = MagicMock()
+        mock_segment2.text = "Thank you for joining"
+        mock_segment2.start = 2.5
+        mock_segment2.end = 4.5
+        
+        mock_info = MagicMock()
+        mock_info.language = "en"
+        mock_info.language_probability = 0.99
+        mock_info.duration = 4.5
+        
+        mock_model.transcribe.return_value = ([mock_segment1, mock_segment2], mock_info)
+        
+        # Mock diarization pipeline
+        mock_diarization_pipeline = MagicMock()
+        mock_diarization = MagicMock()
+        
+        # Mock diarization results
+        mock_turns = [
+            ((0.0, 2.0), None, "SPEAKER_00"),
+            ((2.5, 4.5), None, "SPEAKER_01")
+        ]
+        mock_diarization.itertracks.return_value = mock_turns
+        mock_diarization_pipeline.return_value = mock_diarization
+        
+        with patch.object(processor, 'get_whisper_model', return_value=mock_model), \
+             patch.object(processor, 'get_diarization_pipeline', return_value=mock_diarization_pipeline):
+            
+            transcript, vtt, metadata = await processor.transcribe_audio(
+                audio_file, diarize=True
+            )
+            
+            # Check that speakers are assigned
+            assert "[Speaker 00]" in transcript or "[Speaker 1]" in transcript
+            assert "<v Speaker" in vtt
+            assert "NOTE Speaker identification enabled" in vtt
+            assert metadata['diarization_enabled'] is True
+            assert 'speakers' in metadata
+    
+    @pytest.mark.asyncio
+    async def test_process_audio_file(self, sample_audio_file, temp_dir):
+        """Test complete audio processing pipeline."""
+        processor = AudioProcessor()
+        processor.temp_dir = temp_dir
+        
+        with patch.object(processor, 'normalize_audio') as mock_normalize, \
+             patch.object(processor, 'transcribe_audio') as mock_transcribe:
+            
+            mock_normalize.return_value = (5.0, {'normalized': True})
+            mock_transcribe.return_value = (
+                "Test transcript",
+                "WEBVTT\n\nTest captions",
+                {'transcribed': True}
+            )
+            
+            transcript, vtt, duration, metadata = await processor.process_audio_file(
+                sample_audio_file, "test.wav", "en", False
+            )
+            
+            assert transcript == "Test transcript"
+            assert vtt == "WEBVTT\n\nTest captions"
+            assert duration == 5.0
+            assert 'processing' in metadata
+            assert 'file_info' in metadata
+
+
+class TestTextProcessor:
+    """Tests for TextProcessor."""
+    
+    def test_init(self):
+        """Test TextProcessor initialization."""
+        processor = TextProcessor()
+        assert processor.spacy_model is None
+        assert processor.keybert_model is None
+    
+    @pytest.mark.asyncio
+    async def test_extract_topics_keybert(self):
+        """Test topic extraction with KeyBERT."""
+        processor = TextProcessor()
+        
+        mock_keybert = MagicMock()
+        mock_keybert.extract_keywords.return_value = [
+            ("artificial intelligence", 0.8),
+            ("machine learning", 0.7)
+        ]
+        
+        with patch.object(processor, 'get_keybert_model', return_value=mock_keybert):
+            result = await processor.extract_topics("This is about artificial intelligence and machine learning.")
+            
+            assert len(result['topics']) == 2
+            assert result['topics'][0]['keyword'] == "artificial intelligence"
+            assert result['topics'][0]['score'] == 0.8
+            assert result['extraction_method'] == "keybert"
+    
+    @pytest.mark.asyncio
+    async def test_extract_topics_spacy_fallback(self):
+        """Test topic extraction with spaCy fallback."""
+        processor = TextProcessor()
+        
+        # Mock spaCy model
+        mock_spacy_model = MagicMock()
+        mock_doc = MagicMock()
+        mock_chunk1 = MagicMock()
+        mock_chunk1.text = "artificial intelligence"
+        mock_chunk2 = MagicMock()
+        mock_chunk2.text = "machine learning"
+        mock_doc.noun_chunks = [mock_chunk1, mock_chunk2, mock_chunk1]  # Repeat for frequency
+        mock_spacy_model.return_value = mock_doc
+        
+        with patch.object(processor, 'get_keybert_model', return_value=None), \
+             patch.object(processor, 'get_spacy_model', return_value=mock_spacy_model):
+            
+            result = await processor.extract_topics("This is about artificial intelligence and machine learning.")
+            
+            assert len(result['topics']) >= 1
+            assert result['extraction_method'] == "spacy"
+    
+    @pytest.mark.asyncio
+    async def test_extract_topics_basic_fallback(self):
+        """Test topic extraction with basic word frequency fallback."""
+        processor = TextProcessor()
+        
+        with patch.object(processor, 'get_keybert_model', return_value=None), \
+             patch.object(processor, 'get_spacy_model', return_value=None):
+            
+            text = "machine learning artificial intelligence machine learning data science"
+            result = await processor.extract_topics(text)
+            
+            assert len(result['topics']) >= 1
+            assert result['extraction_method'] == "basic"
+            # "machine" and "learning" should appear as they're > 3 chars and not stop words
+    
+    @pytest.mark.asyncio
+    async def test_summarize_text_textrank(self):
+        """Test text summarization with TextRank."""
+        processor = TextProcessor()
+        
+        with patch('textrank.textrank') as mock_textrank:
+            mock_textrank.return_value = ["This is the first sentence.", "This is the second sentence."]
+            
+            text = "This is a long text. " * 20  # Make it long enough to summarize
+            summary = await processor.summarize_text(text)
+            
+            assert summary == "This is the first sentence. This is the second sentence."
+    
+    @pytest.mark.asyncio
+    async def test_summarize_text_fallback(self):
+        """Test text summarization fallback method."""
+        processor = TextProcessor()
+        
+        with patch('textrank.textrank', side_effect=ImportError("TextRank not available")):
+            text = "First sentence here. Second sentence follows. Third sentence ends it."
+            summary = await processor.summarize_text(text)
+            
+            # Should return first few sentences
+            assert "First sentence here" in summary
+            assert len(summary) > 0
+    
+    @pytest.mark.asyncio
+    async def test_summarize_short_text(self):
+        """Test summarization of short text."""
+        processor = TextProcessor()
+        
+        short_text = "Too short"
+        summary = await processor.summarize_text(short_text)
+        
+        assert summary == short_text  # Should return original for short text
+    
+    def test_get_spacy_model(self):
+        """Test spaCy model loading."""
+        processor = TextProcessor()
+        
+        with patch('spacy.load') as mock_load:
+            mock_model = MagicMock()
+            mock_load.return_value = mock_model
+            
+            model = processor.get_spacy_model()
+            
+            assert model == mock_model
+            mock_load.assert_called_once_with("en_core_web_sm")
+    
+    def test_get_spacy_model_not_found(self):
+        """Test spaCy model loading when model not found."""
+        processor = TextProcessor()
+        
+        with patch('spacy.load', side_effect=OSError("Model not found")):
+            model = processor.get_spacy_model()
+            
+            assert model is None
+    
+    def test_get_keybert_model(self):
+        """Test KeyBERT model loading."""
+        processor = TextProcessor()
+        
+        with patch('keybert.KeyBERT') as mock_keybert:
+            mock_instance = MagicMock()
+            mock_keybert.return_value = mock_instance
+            
+            model = processor.get_keybert_model()
+            
+            assert model == mock_instance
+            mock_keybert.assert_called_once()
+    
+    def test_get_keybert_model_not_available(self):
+        """Test KeyBERT model loading when not available."""
+        processor = TextProcessor()
+        
+        with patch('keybert.KeyBERT', side_effect=ImportError("KeyBERT not available")):
+            model = processor.get_keybert_model()
+            
+            assert model is None
