@@ -1,0 +1,233 @@
+version: "2.0"
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    env:
+      - POSTGRES_DB=transcribe_db
+      - POSTGRES_USER=transcribe_user
+      - POSTGRES_PASSWORD=transcribe_pass
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    expose:
+      - port: 5432
+        as: 5432
+        proto: tcp
+        to:
+          - service: api
+          - service: worker
+    params:
+      storage:
+        data:
+          mount: /var/lib/postgresql/data
+          readOnly: false
+
+  redis:
+    image: redis:7-alpine
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - "512mb"
+      - --maxmemory-policy
+      - "allkeys-lru"
+    expose:
+      - port: 6379
+        as: 6379
+        proto: tcp
+        to:
+          - service: api
+          - service: worker
+    params:
+      storage:
+        redis-data:
+          mount: /data
+          readOnly: false
+
+  api:
+    image: ghcr.io/your-org/transcribe-akash:latest
+    env:
+      - DATABASE_URL=postgresql+asyncpg://transcribe_user:transcribe_pass@postgres:5432/transcribe_db
+      - REDIS_URL=redis://redis:6379
+      - STORAGE_ROOT=/storage
+      - MODELS_DIR=/models
+      - PROMETHEUS_ENABLE=true
+      - FILE_RETENTION_DAYS=30
+      - MONTHLY_CAP_MIN=100
+      - MAX_DURATION_MIN=20
+      - MAX_FILE_SIZE_MB=25
+      - ENABLE_DIARIZATION=true
+    expose:
+      - port: 8000
+        as: 8000
+        proto: tcp
+        to:
+          - service: traefik
+    params:
+      storage:
+        storage:
+          mount: /storage
+          readOnly: false
+        models:
+          mount: /models
+          readOnly: false
+    depends_on:
+      - postgres
+      - redis
+
+  worker:
+    image: ghcr.io/your-org/transcribe-akash:latest
+    command:
+      - celery
+      - -A
+      - celery_main:celery_app
+      - worker
+      - --loglevel=info
+    env:
+      - DATABASE_URL=postgresql+asyncpg://transcribe_user:transcribe_pass@postgres:5432/transcribe_db
+      - REDIS_URL=redis://redis:6379
+      - STORAGE_ROOT=/storage
+      - MODELS_DIR=/models
+      - FILE_RETENTION_DAYS=30
+    params:
+      storage:
+        storage:
+          mount: /storage
+          readOnly: false
+        models:
+          mount: /models
+          readOnly: false
+    depends_on:
+      - postgres
+      - redis
+
+  traefik:
+    image: traefik:v2.10
+    command:
+      - --entrypoints.web.address=:8080
+      - --providers.file.filename=/etc/traefik/dynamic.toml
+      - --providers.file.watch=true
+    expose:
+      - port: 8080
+        as: 80
+        proto: tcp
+        to:
+          - global: true
+    files:
+      - path: /etc/traefik/dynamic.toml
+        content: |
+          [http.routers.api]
+            rule = "PathPrefix(`/`)"
+            service = "backend"
+          [http.services.backend.loadBalancer]
+            [[http.services.backend.loadBalancer.servers]]
+              url = "http://api:8000"
+    depends_on:
+      - api
+
+profiles:
+  compute:
+    postgres:
+      resources:
+        cpu:
+          units: 2000
+        memory:
+          size: 4Gi
+        storage:
+          size: 1Gi
+    redis:
+      resources:
+        cpu:
+          units: 500
+        memory:
+          size: 2Gi
+        storage:
+          size: 1Gi
+    api:
+      resources:
+        cpu:
+          units: 4000
+        memory:
+          size: 8Gi
+        storage:
+          size: 1Gi
+    worker:
+      resources:
+        cpu:
+          units: 8000
+        memory:
+          size: 16Gi
+        storage:
+          size: 1Gi
+    traefik:
+      resources:
+        cpu:
+          units: 500
+        memory:
+          size: 1Gi
+        storage:
+          size: 512Mi
+  placement:
+    akash:
+      attributes:
+        organization: ovrclk.com
+      signedBy:
+        anyOf:
+          - "akash1vz375dkt0c60annyp6mkzeejfq0qpyevhseu05"
+      pricing:
+        postgres:
+          denom: uakt
+          amount: 1000
+        redis:
+          denom: uakt
+          amount: 500
+        api:
+          denom: uakt
+          amount: 4000
+        worker:
+          denom: uakt
+          amount: 6000
+        traefik:
+          denom: uakt
+          amount: 500
+  storage:
+    storage:
+      size: 100Gi
+    models:
+      size: 20Gi
+    data:
+      size: 50Gi
+    redis-data:
+      size: 5Gi
+
+deployment:
+  postgres:
+    akash:
+      profile: postgres
+      count: 1
+      storage:
+        data: data
+  redis:
+    akash:
+      profile: redis
+      count: 1
+      storage:
+        redis-data: redis-data
+  api:
+    akash:
+      profile: api
+      count: 1
+      storage:
+        storage: storage
+        models: models
+  worker:
+    akash:
+      profile: worker
+      count: 1
+      storage:
+        storage: storage
+        models: models
+  traefik:
+    akash:
+      profile: traefik
+      count: 1

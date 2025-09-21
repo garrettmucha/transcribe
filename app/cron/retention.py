@@ -22,7 +22,7 @@ class RetentionManager:
     """Manages file retention and cleanup operations."""
     
     def __init__(self):
-        self.retention_days = int(os.getenv("FILE_RETENTION_DAYS", "7"))
+        self.retention_days = int(os.getenv("FILE_RETENTION_DAYS", "30"))
         self.storage = StorageService()
     
     async def cleanup_expired_files(self) -> Dict[str, Any]:
@@ -123,24 +123,18 @@ class RetentionManager:
             if job.output_uri_prefix:
                 try:
                     output_files = await self._list_output_files(job.output_uri_prefix)
-                    
+
                     for file_key in output_files:
                         try:
-                            # Construct full URI
-                            if self.storage.use_local:
-                                file_uri = f"file://{os.path.join(self.storage.local_storage_path, file_key)}"
-                            else:
-                                file_uri = f"s3://{self.storage.bucket_name}/{file_key}"
-                            
-                            file_size = await self._get_file_size(file_uri)
-                            success = await self.storage.delete_file(file_uri)
+                            file_size = await self._get_file_size(file_key)
+                            success = await self.storage.delete_file(file_key)
                             if success:
                                 cleanup_stats['files_deleted'] += 1
                                 cleanup_stats['bytes_freed'] += file_size
-                                logger.debug(f"Deleted output file: {file_uri}")
+                                logger.debug(f"Deleted output file: {file_key}")
                         except Exception as e:
                             logger.warning(f"Failed to delete output file {file_key}: {e}")
-                            
+
                 except Exception as e:
                     logger.warning(f"Failed to list output files for {job.output_uri_prefix}: {e}")
             
@@ -159,16 +153,15 @@ class RetentionManager:
             return []
     
     async def _get_file_size(self, uri: str) -> int:
-        """Get file size for a URI (best effort)."""
+        """Get file size for a URI or storage key (best effort)."""
         try:
             if uri.startswith("file://"):
                 file_path = uri[7:]
-                if os.path.exists(file_path):
-                    return os.path.getsize(file_path)
-            elif uri.startswith("s3://"):
-                # For S3, we'd need to make a HEAD request
-                # For now, return 0 as we can't easily get size without downloading
-                pass
+            else:
+                file_path = os.path.join(self.storage.root, uri.lstrip("/"))
+
+            if os.path.exists(file_path):
+                return os.path.getsize(file_path)
             return 0
         except Exception:
             return 0
@@ -215,18 +208,12 @@ class RetentionManager:
                         # Check if job exists
                         job = await db.get(Job, job_id)
                         if not job:
-                            # Orphaned file - delete it
-                            if self.storage.use_local:
-                                file_uri = f"file://{os.path.join(self.storage.local_storage_path, file_path)}"
-                            else:
-                                file_uri = f"s3://{self.storage.bucket_name}/{file_path}"
-                            
-                            file_size = await self._get_file_size(file_uri)
-                            success = await self.storage.delete_file(file_uri)
+                            file_size = await self._get_file_size(file_path)
+                            success = await self.storage.delete_file(file_path)
                             if success:
                                 cleanup_stats['orphaned_files'] += 1
                                 cleanup_stats['bytes_freed'] += file_size
-                                logger.debug(f"Deleted orphaned file: {file_uri}")
+                                logger.debug(f"Deleted orphaned file: {file_path}")
                         
                     except Exception as e:
                         logger.warning(f"Failed to process file {file_path}: {e}")

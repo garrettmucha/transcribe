@@ -2,25 +2,30 @@
 Pytest configuration and fixtures.
 """
 
+import asyncio
 import os
 import asyncio
 import tempfile
 from typing import AsyncGenerator, Generator
+import os
+import tempfile
+from typing import AsyncGenerator, Generator
 from unittest.mock import AsyncMock, MagicMock
 
+import fakeredis.aioredis
 import pytest
 import pytest_asyncio
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
-import fakeredis.aioredis
 
 # Set test environment
 os.environ["TESTING"] = "true"
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
 os.environ["REDIS_URL"] = "redis://localhost:6379"
-os.environ["S3_ENDPOINT"] = ""  # Force local storage
-os.environ["LOG_LEVEL"] = "ERROR"  # Reduce noise in tests
+os.environ["LOG_LEVEL"] = "ERROR"
+os.environ["STORAGE_ROOT"] = os.path.join(tempfile.gettempdir(), "transcribe-tests")
+os.environ["STORAGE_PUBLIC_PREFIX"] = "/storage"
 
 from app.main import app
 from app.models import Base, get_db_session
@@ -72,13 +77,17 @@ def client(db_session: AsyncSession) -> Generator[TestClient, None, None]:
     
     # Mock Redis
     fake_redis = fakeredis.aioredis.FakeRedis()
-    
-    # Create test client
-    with TestClient(app) as test_client:
-        yield test_client
-    
-    # Clean up
-    app.dependency_overrides.clear()
+    import app.security.ratelimit as ratelimit_module
+
+    original_redis = ratelimit_module.redis_client
+    ratelimit_module.redis_client = fake_redis
+
+    try:
+        with TestClient(app, raise_server_exceptions=False) as test_client:
+            yield test_client
+    finally:
+        ratelimit_module.redis_client = original_redis
+        app.dependency_overrides.clear()
 
 
 @pytest.fixture

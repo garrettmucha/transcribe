@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Job, JobStatus, UserIdentity, UsageDaily
+from app.models import Job, JobStatus, UserIdentity, UsageMonthly
 from datetime import datetime, date
 
 
@@ -61,7 +61,7 @@ class TestTranscribeEndpoint:
         """Test rejection of audio files that are too long."""
         with patch('app.services.audio.AudioProcessor') as mock_processor_class:
             mock_processor = AsyncMock()
-            mock_processor.probe_duration.return_value = 16 * 60  # 16 minutes
+            mock_processor.probe_duration.return_value = 21 * 60  # 21 minutes
             mock_processor_class.return_value = mock_processor
             
             response = client.post(
@@ -74,16 +74,16 @@ class TestTranscribeEndpoint:
     
     def test_transcribe_daily_limit_exceeded(self, client: TestClient, sample_audio_file: bytes):
         """Test rejection when daily limit is exceeded."""
-        with patch('app.security.ratelimit.check_daily_usage_limit') as mock_check:
+        with patch('app.security.ratelimit.check_monthly_usage_limit') as mock_check:
             mock_check.return_value = (False, 0.5)  # Not allowed, 0.5 minutes remaining
-            
+
             response = client.post(
                 "/api/v1/transcribe",
                 files={"file": ("test.wav", io.BytesIO(sample_audio_file), "audio/wav")}
             )
-        
+
         assert response.status_code == 429
-        assert "Daily limit exceeded" in response.json()["detail"]
+        assert "Monthly quota exceeded" in response.json()["detail"]
 
 
 class TestJobStatusEndpoint:
@@ -182,41 +182,41 @@ class TestUsageEndpoint:
     async def test_get_usage_stats(self, client: TestClient, db_session: AsyncSession, identity_id: str):
         """Test getting usage statistics."""
         # Create usage record
-        today = date.today()
-        usage = UsageDaily(
+        month_start = date.today().replace(day=1)
+        usage = UsageMonthly(
             identity_id=identity_id,
-            date=today,
-            minutes_used=5.5,
-            files=3,
+            month=month_start,
+            minutes_used=55.0,
+            files=6,
             bytes_in=15000,
             bytes_out=7500,
             last_updated_at=datetime.utcnow()
         )
         db_session.add(usage)
         await db_session.commit()
-        
+
         with patch('app.main.get_or_create_identity', return_value=identity_id):
             response = client.get("/api/v1/usage")
-        
+
         assert response.status_code == 200
         data = response.json()
         assert data["identity_id"] == identity_id
-        assert data["daily_limit_minutes"] == 10
-        assert data["today"]["minutes_used"] == 5.5
-        assert data["today"]["files"] == 3
-        assert data["today"]["bytes"] == 15000
-    
+        assert data["monthly_limit_minutes"] == 100
+        assert data["this_month"]["minutes_used"] == 55.0
+        assert data["this_month"]["files"] == 6
+        assert data["this_month"]["bytes"] == 15000
+
     def test_get_usage_stats_new_user(self, client: TestClient, identity_id: str):
         """Test getting usage stats for new user with no history."""
         with patch('app.main.get_or_create_identity', return_value=identity_id):
             response = client.get("/api/v1/usage")
-        
+
         assert response.status_code == 200
         data = response.json()
         assert data["identity_id"] == identity_id
-        assert data["today"]["minutes_used"] == 0.0
-        assert data["today"]["files"] == 0
-        assert data["today"]["bytes"] == 0
+        assert data["this_month"]["minutes_used"] == 0.0
+        assert data["this_month"]["files"] == 0
+        assert data["this_month"]["bytes"] == 0
 
 
 class TestHealthEndpoint:
@@ -277,7 +277,7 @@ class TestErrorHandling:
     
     def test_internal_server_error(self, client: TestClient):
         """Test internal server error handling."""
-        with patch('app.routes.get_usage_stats') as mock_usage:
+        with patch('app.api.routes.get_usage') as mock_usage:
             mock_usage.side_effect = Exception("Database error")
             
             response = client.get("/api/v1/usage")

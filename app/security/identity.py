@@ -1,7 +1,6 @@
-"""
-Identity management and device fingerprinting.
-"""
+"""Identity management and device fingerprinting."""
 
+import asyncio
 import os
 import uuid
 import hashlib
@@ -10,10 +9,10 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import Request, Response
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import UserIdentity, IpBlocklist, AsyncSessionLocal
+from app.models import AsyncSessionLocal, IpBlocklist, UserIdentity
 from app.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -70,6 +69,14 @@ def compute_identity_key(ip: str, device_id: str, ua_hash: str) -> str:
     return hashlib.sha256(identity_data.encode()).hexdigest()
 
 
+async def _maybe_await(value):
+    """Return awaited value if coroutine, otherwise the original value."""
+
+    if asyncio.iscoroutine(value):
+        return await value
+    return value
+
+
 async def get_or_create_identity(request: Request) -> str:
     """
     Get or create user identity based on IP + device cookie + UA.
@@ -105,7 +112,7 @@ async def get_or_create_identity(request: Request) -> str:
             # Check if identity exists
             stmt = select(UserIdentity).where(UserIdentity.id == identity_key)
             result = await db.execute(stmt)
-            identity = result.scalar_one_or_none()
+            identity = await _maybe_await(result.scalar_one_or_none())
             
             if identity:
                 # Update last seen
@@ -124,7 +131,7 @@ async def get_or_create_identity(request: Request) -> str:
                     ua_last=user_agent,
                     blocked=False
                 )
-                db.add(identity)
+                await _maybe_await(db.add(identity))
             
             await db.commit()
             logger.debug(f"Identity resolved: {identity_key[:8]}... (IP: {client_ip})")
@@ -144,7 +151,7 @@ async def is_ip_blocked(ip: str) -> bool:
         async with AsyncSessionLocal() as db:
             stmt = select(IpBlocklist).where(IpBlocklist.ip == ip)
             result = await db.execute(stmt)
-            blocked_entry = result.scalar_one_or_none()
+            blocked_entry = await _maybe_await(result.scalar_one_or_none())
             return blocked_entry is not None
     except Exception as e:
         logger.error(f"IP blocklist check failed: {e}")
@@ -158,7 +165,8 @@ async def block_ip(ip: str, reason: str, admin_user: Optional[str] = None) -> bo
             # Check if already blocked
             stmt = select(IpBlocklist).where(IpBlocklist.ip == ip)
             result = await db.execute(stmt)
-            if result.scalar_one_or_none():
+            existing = await _maybe_await(result.scalar_one_or_none())
+            if existing:
                 return True  # Already blocked
             
             # Add to blocklist
@@ -168,7 +176,7 @@ async def block_ip(ip: str, reason: str, admin_user: Optional[str] = None) -> bo
                 created_by=admin_user,
                 created_at=datetime.utcnow()
             )
-            db.add(block_entry)
+            await _maybe_await(db.add(block_entry))
             await db.commit()
             
             logger.info(f"IP {ip} blocked: {reason}")
@@ -185,10 +193,10 @@ async def unblock_ip(ip: str) -> bool:
         async with AsyncSessionLocal() as db:
             stmt = select(IpBlocklist).where(IpBlocklist.ip == ip)
             result = await db.execute(stmt)
-            block_entry = result.scalar_one_or_none()
+            block_entry = await _maybe_await(result.scalar_one_or_none())
             
             if block_entry:
-                await db.delete(block_entry)
+                await _maybe_await(db.delete(block_entry))
                 await db.commit()
                 logger.info(f"IP {ip} unblocked")
                 return True

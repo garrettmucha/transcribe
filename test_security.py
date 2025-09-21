@@ -17,10 +17,14 @@ from app.security.identity import (
     is_ip_blocked, block_ip, unblock_ip
 )
 from app.security.ratelimit import (
-    check_rate_limit, check_concurrent_limit, release_concurrent_limit,
-    check_daily_usage_limit, record_usage, get_rate_limit_status
+    check_rate_limit,
+    check_concurrent_limit,
+    release_concurrent_limit,
+    check_monthly_usage_limit,
+    record_usage,
+    get_rate_limit_status,
 )
-from app.models import UserIdentity, UsageDaily, IpBlocklist
+from app.models import UserIdentity, UsageMonthly, IpBlocklist
 
 
 class TestIdentityManagement:
@@ -269,9 +273,10 @@ class TestRateLimiting:
         identity_id = "test-identity"
         
         # No existing concurrent jobs
-        allowed = await check_concurrent_limit(identity_id)
-        
+        allowed, remaining = await check_concurrent_limit(identity_id)
+
         assert allowed is True
+        assert remaining >= 0
         
         # Should have incremented semaphore
         count = await mock_redis.get(f"concurrent:{identity_id}")
@@ -285,9 +290,10 @@ class TestRateLimiting:
         # Set up existing concurrent job
         await mock_redis.set(f"concurrent:{identity_id}", 1)
         
-        allowed = await check_concurrent_limit(identity_id)
-        
+        allowed, remaining = await check_concurrent_limit(identity_id)
+
         assert allowed is False
+        assert remaining == 0
     
     @pytest.mark.asyncio
     async def test_release_concurrent_limit(self, mock_redis):
@@ -301,11 +307,11 @@ class TestRateLimiting:
         
         # Should have decremented
         count = await mock_redis.get(f"concurrent:{identity_id}")
-        assert int(count) == 0
+        assert count in (None, "0")
     
     @pytest.mark.asyncio
-    async def test_check_daily_usage_limit_allowed(self, db_session: AsyncSession):
-        """Test daily usage limit check when allowed."""
+    async def test_check_monthly_usage_limit_allowed(self, db_session: AsyncSession):
+        """Test monthly usage limit check when allowed."""
         identity_id = "usage-test-identity"
         
         # Create identity
@@ -317,10 +323,10 @@ class TestRateLimiting:
         db_session.add(identity)
         
         # Create usage record with some usage
-        usage = UsageDaily(
+        usage = UsageMonthly(
             identity_id=identity_id,
-            date=date.today(),
-            minutes_used=5.0,
+            month=date.today().replace(day=1),
+            minutes_used=50.0,
             files=2,
             bytes_in=1000000,
             bytes_out=500000
@@ -328,17 +334,17 @@ class TestRateLimiting:
         db_session.add(usage)
         await db_session.commit()
         
-        # Test adding 3 more minutes (should be allowed)
-        allowed, remaining = await check_daily_usage_limit(
-            identity_id, 3.0, 10, db_session
+        # Test adding 20 more minutes (should be allowed)
+        allowed, remaining = await check_monthly_usage_limit(
+            identity_id, 20.0, 100, db_session
         )
-        
+
         assert allowed is True
-        assert remaining == 5.0  # 10 - 5 = 5 remaining
-    
+        assert remaining == 50.0  # 100 - 50
+
     @pytest.mark.asyncio
-    async def test_check_daily_usage_limit_exceeded(self, db_session: AsyncSession):
-        """Test daily usage limit check when exceeded."""
+    async def test_check_monthly_usage_limit_exceeded(self, db_session: AsyncSession):
+        """Test monthly usage limit check when exceeded."""
         identity_id = "usage-exceeded-identity"
         
         # Create identity
@@ -350,10 +356,10 @@ class TestRateLimiting:
         db_session.add(identity)
         
         # Create usage record near limit
-        usage = UsageDaily(
+        usage = UsageMonthly(
             identity_id=identity_id,
-            date=date.today(),
-            minutes_used=8.0,
+            month=date.today().replace(day=1),
+            minutes_used=90.0,
             files=5,
             bytes_in=5000000,
             bytes_out=2500000
@@ -361,13 +367,13 @@ class TestRateLimiting:
         db_session.add(usage)
         await db_session.commit()
         
-        # Test adding 5 more minutes (should exceed 10 minute limit)
-        allowed, remaining = await check_daily_usage_limit(
-            identity_id, 5.0, 10, db_session
+        # Test adding 20 more minutes (should exceed 100 minute limit)
+        allowed, remaining = await check_monthly_usage_limit(
+            identity_id, 20.0, 100, db_session
         )
-        
+
         assert allowed is False
-        assert remaining == 2.0  # 10 - 8 = 2 remaining
+        assert remaining == 10.0  # 100 - 90
     
     @pytest.mark.asyncio
     async def test_record_usage_new_record(self, db_session: AsyncSession, mock_redis):
@@ -389,7 +395,7 @@ class TestRateLimiting:
         )
         
         # Verify record was created
-        usage = await db_session.get(UsageDaily, (identity_id, date.today()))
+        usage = await db_session.get(UsageMonthly, (identity_id, date.today().replace(day=1)))
         assert usage is not None
         assert usage.minutes_used == 3.5
         assert usage.files == 1
@@ -410,9 +416,9 @@ class TestRateLimiting:
         db_session.add(identity)
         
         # Create existing usage record
-        usage = UsageDaily(
+        usage = UsageMonthly(
             identity_id=identity_id,
-            date=date.today(),
+            month=date.today().replace(day=1),
             minutes_used=2.0,
             files=1,
             bytes_in=1000000,
@@ -427,7 +433,7 @@ class TestRateLimiting:
         )
         
         # Verify record was updated
-        updated_usage = await db_session.get(UsageDaily, (identity_id, date.today()))
+        updated_usage = await db_session.get(UsageMonthly, (identity_id, date.today().replace(day=1)))
         assert updated_usage.minutes_used == 3.5  # 2.0 + 1.5
         assert updated_usage.files == 2  # 1 + 1
         assert updated_usage.bytes_in == 1500000  # 1000000 + 500000
@@ -439,14 +445,14 @@ class TestRateLimiting:
         identity_id = "status-test-identity"
         
         # Set up Redis state
-        await mock_redis.set(f"rate:{identity_id}:tokens", 10)
+        await mock_redis.set(f"rate:{identity_id}:tokens", 5)
         await mock_redis.set(f"rate:{identity_id}:timestamp", time.time())
         await mock_redis.set(f"concurrent:{identity_id}", 1)
         
         status = await get_rate_limit_status(identity_id)
         
-        assert status['tokens_remaining'] == 10
-        assert status['tokens_max'] == 15
+        assert status['tokens_remaining'] == 5
+        assert status['tokens_max'] == 10
         assert status['concurrent_jobs'] == 1
         assert status['concurrent_max'] == 1
         assert 'reset_at' in status

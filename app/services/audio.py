@@ -1,17 +1,14 @@
-"""
-Audio processing service using ffmpeg and faster-whisper.
-"""
+"""Audio processing utilities built around faster-whisper and pyannote."""
 
+from __future__ import annotations
+
+import asyncio
+import json
 import os
 import tempfile
-import asyncio
-import subprocess
-import json
-from typing import Optional, Tuple, Dict, Any
+import time
 from pathlib import Path
-
-import ffmpeg
-from faster_whisper import WhisperModel
+from typing import Any, Dict, Optional, Tuple
 
 from app.observability.logging import get_logger
 
@@ -39,11 +36,13 @@ class AudioProcessor:
         """Get or initialize Whisper model with fallback (thread-safe lazy loading)."""
         if self._whisper_model is None:
             logger.info(f"Loading Whisper model: {self.whisper_model_name}")
-            
+
             try:
+                from faster_whisper import WhisperModel  # type: ignore
+
                 # faster-whisper downloads from Hugging Face Hub:
                 # - small: ~244MB (guillaumekln/faster-whisper-small)
-                # - medium: ~769MB (guillaumekln/faster-whisper-medium) 
+                # - medium: ~769MB (guillaumekln/faster-whisper-medium)
                 # - large: ~1550MB (guillaumekln/faster-whisper-large)
                 # Models are cached in ~/.cache/huggingface/hub/
                 
@@ -61,6 +60,8 @@ class AudioProcessor:
                 if self.whisper_model_name != "small":
                     logger.info("Falling back to 'small' model...")
                     try:
+                        from faster_whisper import WhisperModel  # type: ignore
+
                         self._whisper_model = WhisperModel(
                             "small",
                             device="cpu",
@@ -85,7 +86,7 @@ class AudioProcessor:
         if self._diarization_pipeline is None:
             try:
                 logger.info("Loading speaker diarization pipeline...")
-                from pyannote.audio import Pipeline
+                from pyannote.audio import Pipeline  # type: ignore
                 
                 # Use the pre-trained speaker diarization pipeline
                 self._diarization_pipeline = Pipeline.from_pretrained(
@@ -109,18 +110,40 @@ class AudioProcessor:
         with tempfile.NamedTemporaryFile(suffix=self._get_file_extension(filename)) as temp_file:
             temp_file.write(file_content)
             temp_file.flush()
-            
-            # Use ffprobe to get duration
-            def probe():
-                try:
-                    probe_result = ffmpeg.probe(temp_file.name)
-                    duration = float(probe_result['streams'][0]['duration'])
-                    return duration
-                except Exception as e:
-                    logger.error(f"ffprobe failed: {e}")
-                    raise ValueError(f"Invalid audio file: {e}")
-            
-            return await asyncio.get_event_loop().run_in_executor(None, probe)
+
+            def probe_with_ffmpeg() -> float:
+                import ffmpeg  # type: ignore
+
+                probe_result = ffmpeg.probe(temp_file.name)
+                duration = float(probe_result['streams'][0]['duration'])
+                return duration
+
+            loop = asyncio.get_running_loop()
+
+            try:
+                return await loop.run_in_executor(None, probe_with_ffmpeg)
+            except ModuleNotFoundError:
+                logger.warning("ffmpeg module not available, using wave fallback")
+                return await loop.run_in_executor(None, self._probe_duration_wave, temp_file.name)
+            except Exception as e:
+                logger.error(f"ffprobe failed: {e}")
+                raise ValueError(f"Invalid audio file: {e}")
+
+    def _probe_duration_wave(self, file_path: str) -> float:
+        """Fallback duration probe using Python's wave module."""
+
+        try:
+            import wave
+
+            with wave.open(file_path, "rb") as wf:
+                frames = wf.getnframes()
+                rate = wf.getframerate()
+                if rate <= 0:
+                    raise ValueError("Invalid audio sample rate")
+                return frames / float(rate)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.error(f"Wave probe failed: {exc}")
+            raise ValueError(f"Invalid audio file: {exc}")
     
     async def normalize_audio(
         self, 
@@ -133,6 +156,8 @@ class AudioProcessor:
         """
         def normalize():
             try:
+                import ffmpeg  # type: ignore
+
                 # Get input info
                 probe_result = ffmpeg.probe(input_file)
                 input_duration = float(probe_result['streams'][0]['duration'])
@@ -186,8 +211,9 @@ class AudioProcessor:
         def transcribe():
             try:
                 model = self.get_whisper_model()
-                
+
                 # Transcribe with Whisper
+                transcribe_start = time.time()
                 segments, info = model.transcribe(
                     audio_file,
                     language=language,
@@ -195,7 +221,7 @@ class AudioProcessor:
                     word_timestamps=True,
                     vad_filter=True
                 )
-                
+
                 # Convert segments to list for processing
                 segments_list = list(segments)
                 
@@ -254,6 +280,7 @@ class AudioProcessor:
                     'model_used': self.whisper_model_name,
                     'beam_size': self.whisper_beam_size,
                     'diarization_enabled': diarize and self.enable_diarization,
+                    'transcription_time': time.time() - transcribe_start,
                 }
                 
                 # Add speaker information if diarization was performed
@@ -484,11 +511,12 @@ class TextProcessor:
                     filtered_words = [w for w in words if len(w) > 3 and w not in stop_words]
                     
                     from collections import Counter
-                    word_counts = Counter(filtered_words)
-                    topics = [
-                        {"keyword": word, "score": count / len(filtered_words)}
-                        for word, count in word_counts.most_common(max_topics)
-                    ]
+                    if filtered_words:
+                        word_counts = Counter(filtered_words)
+                        topics = [
+                            {"keyword": word, "score": count / len(filtered_words)}
+                            for word, count in word_counts.most_common(max_topics)
+                        ]
                 
                 return {
                     "topics": topics,
@@ -507,36 +535,36 @@ class TextProcessor:
         def summarize():
             try:
                 if len(text) < 100:
-                    return text  # Too short to summarize
-                
-                # Try TextRank
-                try:
-                    from textrank import textrank
-                    sentences = textrank(text, max_sentences)
-                    return " ".join(sentences)
-                except ImportError:
-                    logger.warning("TextRank not available, using basic summarization")
-                
-                # Fallback: extract first few sentences
+                    return text
+
                 import re
-                sentences = re.split(r'[.!?]+', text)
-                sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
-                
-                # Take first few sentences up to reasonable length
-                summary_sentences = []
-                total_length = 0
-                
-                for sentence in sentences[:max_sentences * 2]:
-                    if total_length + len(sentence) > 500:  # Max summary length
-                        break
-                    summary_sentences.append(sentence)
-                    total_length += len(sentence)
-                    
-                    if len(summary_sentences) >= max_sentences:
-                        break
-                
-                return ". ".join(summary_sentences) + "." if summary_sentences else text[:200] + "..."
-                
+                from collections import Counter
+
+                sentences = [s.strip() for s in re.split(r'(?<=[.!?]) +', text) if len(s.strip()) > 20]
+                if not sentences:
+                    return text
+
+                words = re.findall(r"[A-Za-z']+", text.lower())
+                stop_words = {
+                    'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by',
+                    'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did'
+                }
+                filtered = [w for w in words if len(w) > 3 and w not in stop_words]
+                if not filtered:
+                    return " ".join(sentences[:max_sentences])
+
+                freq = Counter(filtered)
+                sentence_scores = []
+                for sentence in sentences:
+                    tokens = re.findall(r"[A-Za-z']+", sentence.lower())
+                    score = sum(freq.get(token, 0) for token in tokens if token not in stop_words)
+                    sentence_scores.append((score, sentence))
+
+                top_sentences = sorted(sentence_scores, key=lambda x: x[0], reverse=True)[:max_sentences]
+                ordered = [sentence for _, sentence in sorted(top_sentences, key=lambda x: sentences.index(x[1]))]
+                summary = " ".join(ordered)
+                return summary if summary else " ".join(sentences[:max_sentences])
+
             except Exception as e:
                 logger.error(f"Text summarization failed: {e}")
                 return text[:200] + "..." if len(text) > 200 else text
