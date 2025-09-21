@@ -1,3 +1,4 @@
+---
 version: "2.0"
 
 services:
@@ -10,7 +11,6 @@ services:
       - PGDATA=/var/lib/postgresql/data/pgdata
     expose:
       - port: 5432
-        as: 5432
         proto: tcp
         to:
           - service: api
@@ -33,7 +33,6 @@ services:
       - "allkeys-lru"
     expose:
       - port: 6379
-        as: 6379
         proto: tcp
         to:
           - service: api
@@ -45,21 +44,62 @@ services:
           readOnly: false
 
   api:
-    image: ghcr.io/your-org/transcribe-akash:latest
+    image: python:3.11-slim
     env:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - PIP_NO_CACHE_DIR=1
+      - GITHUB_PAT=__REPLACE_WITH_GITHUB_PAT__
+      - GIT_REPO=https://github.com/garrettmucha/transcribe.git
+      - GIT_REF=main
       - DATABASE_URL=postgresql+asyncpg://transcribe_user:transcribe_pass@postgres:5432/transcribe_db
       - REDIS_URL=redis://redis:6379
       - STORAGE_ROOT=/storage
       - MODELS_DIR=/models
+      - WHISPER_CACHE_DIR=/models
+      - TEMP_DIR=/tmp/transcribe
       - PROMETHEUS_ENABLE=true
       - FILE_RETENTION_DAYS=30
       - MONTHLY_CAP_MIN=100
       - MAX_DURATION_MIN=20
       - MAX_FILE_SIZE_MB=25
       - ENABLE_DIARIZATION=true
+    command:
+      - /bin/sh
+      - -c
+      - |
+          set -eu
+          if [ -z "${GITHUB_PAT:-}" ]; then
+            echo "GITHUB_PAT must be set to clone ${GIT_REPO:-https://github.com/garrettmucha/transcribe.git}" >&2
+            exit 1
+          fi
+          if ! command -v git >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y --no-install-recommends build-essential ffmpeg libsndfile1 git curl
+            rm -rf /var/lib/apt/lists/*
+          fi
+          APP_DIR="/opt/app"
+          REPO_URL="${GIT_REPO:-https://github.com/garrettmucha/transcribe.git}"
+          rm -rf "${APP_DIR}"
+          AUTH_URL="${REPO_URL}"
+          case "${REPO_URL}" in
+            https://*) AUTH_URL="https://${GITHUB_PAT}@${REPO_URL#https://}" ;;
+            http://*) AUTH_URL="http://${GITHUB_PAT}@${REPO_URL#http://}" ;;
+          esac
+          git clone "${AUTH_URL}" "${APP_DIR}"
+          cd "${APP_DIR}"
+          if [ -n "${GIT_REF:-}" ]; then
+            git checkout "${GIT_REF}"
+          fi
+          git remote set-url origin "${REPO_URL}"
+          unset GITHUB_PAT
+          python -m pip install --upgrade pip
+          python -m pip install --no-cache-dir -r requirements.txt
+          export PYTHONPATH="${APP_DIR}"
+          mkdir -p "${MODELS_DIR:-/models}" "${STORAGE_ROOT:-/storage}" "${TEMP_DIR:-/tmp/transcribe}"
+          exec uvicorn app.main:app --host 0.0.0.0 --port 8000
     expose:
       - port: 8000
-        as: 8000
         proto: tcp
         to:
           - service: traefik
@@ -71,24 +111,60 @@ services:
         models:
           mount: /models
           readOnly: false
-    depends_on:
-      - postgres
-      - redis
+    depends-on:
+      - service: postgres
+      - service: redis
 
   worker:
-    image: ghcr.io/your-org/transcribe-akash:latest
-    command:
-      - celery
-      - -A
-      - celery_main:celery_app
-      - worker
-      - --loglevel=info
+    image: python:3.11-slim
     env:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+      - PIP_NO_CACHE_DIR=1
+      - GITHUB_PAT=__REPLACE_WITH_GITHUB_PAT__
+      - GIT_REPO=https://github.com/garrettmucha/transcribe.git
+      - GIT_REF=main
       - DATABASE_URL=postgresql+asyncpg://transcribe_user:transcribe_pass@postgres:5432/transcribe_db
       - REDIS_URL=redis://redis:6379
       - STORAGE_ROOT=/storage
       - MODELS_DIR=/models
+      - WHISPER_CACHE_DIR=/models
+      - TEMP_DIR=/tmp/transcribe
       - FILE_RETENTION_DAYS=30
+    command:
+      - /bin/sh
+      - -c
+      - |
+          set -eu
+          if [ -z "${GITHUB_PAT:-}" ]; then
+            echo "GITHUB_PAT must be set to clone ${GIT_REPO:-https://github.com/garrettmucha/transcribe.git}" >&2
+            exit 1
+          fi
+          if ! command -v git >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y --no-install-recommends build-essential ffmpeg libsndfile1 git curl
+            rm -rf /var/lib/apt/lists/*
+          fi
+          APP_DIR="/opt/app"
+          REPO_URL="${GIT_REPO:-https://github.com/garrettmucha/transcribe.git}"
+          rm -rf "${APP_DIR}"
+          AUTH_URL="${REPO_URL}"
+          case "${REPO_URL}" in
+            https://*) AUTH_URL="https://${GITHUB_PAT}@${REPO_URL#https://}" ;;
+            http://*) AUTH_URL="http://${GITHUB_PAT}@${REPO_URL#http://}" ;;
+          esac
+          git clone "${AUTH_URL}" "${APP_DIR}"
+          cd "${APP_DIR}"
+          if [ -n "${GIT_REF:-}" ]; then
+            git checkout "${GIT_REF}"
+          fi
+          git remote set-url origin "${REPO_URL}"
+          unset GITHUB_PAT
+          python -m pip install --upgrade pip
+          python -m pip install --no-cache-dir -r requirements.txt
+          export PYTHONPATH="${APP_DIR}"
+          mkdir -p "${MODELS_DIR:-/models}" "${STORAGE_ROOT:-/storage}" "${TEMP_DIR:-/tmp/transcribe}"
+          exec celery -A celery_main:celery_app worker --loglevel=info
     params:
       storage:
         storage:
@@ -97,9 +173,9 @@ services:
         models:
           mount: /models
           readOnly: false
-    depends_on:
-      - postgres
-      - redis
+    depends-on:
+      - service: postgres
+      - service: redis
 
   traefik:
     image: traefik:v2.10
@@ -122,51 +198,75 @@ services:
           [http.services.backend.loadBalancer]
             [[http.services.backend.loadBalancer.servers]]
               url = "http://api:8000"
-    depends_on:
-      - api
+    depends-on:
+      - service: api
 
 profiles:
   compute:
     postgres:
       resources:
         cpu:
-          units: 2000
+          units: 2
         memory:
           size: 4Gi
         storage:
-          size: 1Gi
+          - size: 1Gi
+          - name: data
+            size: 50Gi
+            attributes:
+              persistent: true
     redis:
       resources:
         cpu:
-          units: 500
+          units: 0.5
         memory:
           size: 2Gi
         storage:
-          size: 1Gi
+          - size: 1Gi
+          - name: redis-data
+            size: 5Gi
+            attributes:
+              persistent: true
     api:
       resources:
         cpu:
-          units: 4000
+          units: 4
         memory:
           size: 8Gi
         storage:
-          size: 1Gi
+          - size: 1Gi
+          - name: storage
+            size: 100Gi
+            attributes:
+              persistent: true
+          - name: models
+            size: 20Gi
+            attributes:
+              persistent: true
     worker:
       resources:
         cpu:
-          units: 8000
+          units: 8
         memory:
           size: 16Gi
         storage:
-          size: 1Gi
+          - size: 1Gi
+          - name: storage
+            size: 100Gi
+            attributes:
+              persistent: true
+          - name: models
+            size: 20Gi
+            attributes:
+              persistent: true
     traefik:
       resources:
         cpu:
-          units: 500
+          units: 0.5
         memory:
           size: 1Gi
         storage:
-          size: 512Mi
+          - size: 512Mi
   placement:
     akash:
       attributes:
@@ -190,43 +290,24 @@ profiles:
         traefik:
           denom: uakt
           amount: 500
-  storage:
-    storage:
-      size: 100Gi
-    models:
-      size: 20Gi
-    data:
-      size: 50Gi
-    redis-data:
-      size: 5Gi
 
 deployment:
   postgres:
     akash:
       profile: postgres
       count: 1
-      storage:
-        data: data
   redis:
     akash:
       profile: redis
       count: 1
-      storage:
-        redis-data: redis-data
   api:
     akash:
       profile: api
       count: 1
-      storage:
-        storage: storage
-        models: models
   worker:
     akash:
       profile: worker
       count: 1
-      storage:
-        storage: storage
-        models: models
   traefik:
     akash:
       profile: traefik
