@@ -1,0 +1,75 @@
+version: "2.0"
+
+services:
+  web:
+    image: node:20-bookworm
+    env:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL}
+      - DATABASE_URL=${DATABASE_URL}
+      - NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
+      - BILLING_ENABLED=${BILLING_ENABLED}
+      - MAX_FREE_AI_GENERATIONS=${MAX_FREE_AI_GENERATIONS}
+      - FREE_MAX_EXPORTS=${FREE_MAX_EXPORTS}
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+      - GITHUB_PAT=${GITHUB_PAT}
+      - REPO_URL=https://github.com/garrettmucha/resume.git
+    cmd:
+      - /bin/bash
+      - -lc
+      - |
+        set -euo pipefail
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update
+        apt-get install -y --no-install-recommends \
+          git ca-certificates wget curl unzip chromium \
+          fonts-noto-core fonts-noto-cjk locales tzdata
+        rm -rf /var/lib/apt/lists/*
+
+        if [ -n "${GITHUB_PAT:-}" ] && [ "${GITHUB_PAT}" != "" ]; then
+          GIT_URL="https://${GITHUB_PAT}:x-oauth-basic@github.com/garrettmucha/resume.git"
+        else
+          GIT_URL="${REPO_URL}"
+        fi
+
+        mkdir -p /opt/app && cd /opt/app
+        git clone --depth 1 "${GIT_URL}" .
+        corepack enable || true
+        npm ci
+        npx playwright install --with-deps chromium || true
+        npm run build
+        npm run start -- -p 3000 -H 0.0.0.0
+    expose:
+      - port: 3000
+        as: 80
+        to:
+          - global: true
+    params:
+      storage:
+        data:
+          mount: /opt/app/.data
+          readOnly: false
+
+profiles:
+  compute:
+    web:
+      resources:
+        cpu:
+          units: "1.0"
+        memory:
+          size: "2Gi"
+        storage:
+          - size: "10Gi"
+  placement:
+    akash:
+      pricing:
+        web:
+          denom: uakt
+          amount: 1000
+
+deployment:
+  web:
+    akash:
+      profile: web
+      count: 1
