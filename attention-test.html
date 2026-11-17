@@ -185,6 +185,12 @@ td.overall, th.overall { font-weight: 700; border-left: 1px solid var(--border);
   <div id="resNotes"></div>
 
   <div class="card">
+    <h2>Measurement quality</h2>
+    <p id="qualVerdict" class="note"></p>
+    <p class="small" id="qualDetail" style="margin:0"></p>
+  </div>
+
+  <div class="card">
     <h2>Quartile breakdown</h2>
     <div class="tablewrap"><table id="resTable"></table></div>
   </div>
@@ -220,11 +226,22 @@ td.overall, th.overall { font-weight: 700; border-left: 1px solid var(--border);
   </div>
 
   <div class="card small">
+    <h2>How this compares with a clinical QbTest</h2>
+    <ul class="tight">
+      <li><b>Same task design</b> as publicly described for the adult version: remember-the-previous-one matching on four shape/color stimuli, 200 ms on screen, one every 2 seconds, 600 trials over 20 minutes, 25% targets.</li>
+      <li><b>No norm group.</b> A clinical report scores you against people of your age and sex. This app has no such data, so it can only compare you with your own earlier sessions. A number here is not high or low in any clinical sense.</li>
+      <li><b>Different movement measurement.</b> The clinical test follows a reflective marker on your head with an infrared camera and reports distance and area in real units. This app measures how much the webcam image changes, which is a consistent signal for you in a fixed setup but is not head position.</li>
+      <li><b>Consumer hardware.</b> Your keyboard and display add a roughly constant delay to every reaction time. Differences between your own sessions on the same computer are meaningful; the absolute milliseconds are not comparable with clinical equipment.</li>
+    </ul>
+  </div>
+
+  <div class="card small">
     <h2>How the numbers are computed</h2>
     <ul class="tight">
       <li><b>Omission</b>: a target (exact repeat) with no press in its 2-second window. <b>Commission</b>: a press on a non-target (lure or different) at 150 ms or later.</li>
       <li><b>Anticipatory</b>: any press faster than 150 ms after stimulus onset. These are counted on their own and excluded from hits, commissions and reaction-time statistics.</li>
-      <li><b>Mean RT / RT variability</b>: mean and sample standard deviation of reaction times for correct hits.</li>
+      <li><b>Mean RT / RT variability</b>: mean and sample standard deviation of reaction times for correct hits. <b>Sensitivity d′</b>: how well you separate targets from non-targets, from hit rate and false-press rate (log-linear corrected).</li>
+      <li><b>Timing check</b>: the run fails if any stimulus was skipped, appeared more than 40 ms late, or stayed on screen outside 170–240 ms. Failed runs are not added to your history.</li>
       <li><b>Activity score</b>: frame-to-frame luminance change inside the dashed box, minus your calibration baseline, scaled so 1.0 is the movement threshold. <b>Motion index</b>: area under that score (score × seconds). <b>Active time</b>: share of samples at or above the threshold. <b>Bursts</b>: separate runs of above-threshold movement.</li>
       <li>Lighting changes, camera auto-exposure and people moving behind you all register as movement. Compare sessions only when recorded in the same setup.</li>
     </ul>
@@ -316,6 +333,17 @@ function sampleMotion() {
   cam.prev = lum;
 }
 function median(a) { const s = Array.from(a).sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; }
+// Inverse standard normal CDF (Acklam's rational approximation)
+function zInv(p) {
+  const a = [-39.69683028665376, 220.9460984245205, -275.9285104469687, 138.357751867269, -30.66479806614716, 2.506628277459239];
+  const b = [-54.47609879822406, 161.5858368580409, -155.6989798598866, 66.80131188771972, -13.28068155288572];
+  const c = [-0.007784894002430293, -0.3223964580411365, -2.400758277161838, -2.549732539343734, 4.374664141464968, 2.938163982698783];
+  const d = [0.007784695709041462, 0.3224671290700398, 2.445134137142996, 3.754408661907416];
+  if (p < 0.02425) { const q = Math.sqrt(-2 * Math.log(p)); return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1); }
+  if (p > 1 - 0.02425) return -zInv(1 - p);
+  const q = p - 0.5, r = q * q;
+  return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+}
 function calibrate(samples) {
   if (samples.length < 10) return { baseline: 0.004, threshold: 0.012, samples: samples.length, fallback: true };
   const base = median(samples), mad = median(samples.map(v => Math.abs(v - base)));
@@ -359,8 +387,10 @@ function startRun(mode) {
   run = {
     mode, planned: n, trials: buildSequence(n), startedAt: new Date().toISOString(),
     phase: hasCam ? 'calib' : 'countdown', hasCam, calib: [], cal: null,
-    t0: 0, cur: -1, stimOn: false, mt: [], me: [], completed: 0, stoppedEarly: false, stopReason: null, wentFullscreen: false
+    t0: 0, cur: -1, stimOn: false, mt: [], me: [], completed: 0, stoppedEarly: false, stopReason: null, wentFullscreen: false,
+    frameGaps: [], lastFrame: null, camInfo: null
   };
+  if (hasCam) { try { const st = cam.stream.getVideoTracks()[0].getSettings(); run.camInfo = { width: st.width, height: st.height, frameRate: st.frameRate }; } catch (e) {} }
   el.stim.style.visibility = 'hidden';
   show('stage');
   if (el.stage.requestFullscreen) el.stage.requestFullscreen().then(() => { if (run) run.wentFullscreen = true; }).catch(() => {});
@@ -384,6 +414,8 @@ function beginTest() {
 function frame() {
   if (!run || run.phase !== 'test') return;
   const now = performance.now(), elapsed = now - run.t0;
+  if (run.lastFrame != null) run.frameGaps.push(now - run.lastFrame);
+  run.lastFrame = now;
   if (elapsed >= 0) {
     const idx = Math.floor(elapsed / CFG.trialMs);
     if (idx !== run.cur) {
@@ -392,7 +424,7 @@ function frame() {
       const t = run.trials[idx];
       el.stim.className = t.shape + ' ' + t.color;
       el.stim.style.visibility = 'visible';
-      t.onset = performance.now(); run.stimOn = true;
+      t.onset = performance.now(); t.onsetLag = t.onset - (run.t0 + idx * CFG.trialMs); run.stimOn = true;
     } else if (run.stimOn) {
       const t = run.trials[run.cur];
       if (now - t.onset >= CFG.stimMs - 4) { el.stim.style.visibility = 'hidden'; run.stimOn = false; t.shownMs = now - t.onset; }
@@ -420,7 +452,7 @@ function finish(early, reason) {
   lastReport = analyze(run);
   run = null;
   const prior = loadHistory().filter(r => r.mode === lastReport.mode);
-  const saved = !lastReport.stoppedEarly && lastReport.completedTrials > 0 && saveSession(lastReport);
+  const saved = !lastReport.stoppedEarly && lastReport.timing.valid && saveSession(lastReport);
   show('results');
   renderResults(lastReport);
   renderComparison(lastReport, prior, saved);
@@ -480,6 +512,10 @@ function analyze(r) {
       commissions: b.commissions, commissionPct: b.nonTargets ? 100 * b.commissions / b.nonTargets : null,
       commissionsOnLures: b.commissionsOnLures, commissionsOnDifferent: b.commissionsOnDifferent,
       anticipatory: b.anticipatory, extraPresses: b.extraPresses,
+      rtCvPct: mean && sd != null ? 100 * sd / mean : null,
+      errorRatePct: b.trials ? 100 * (b.omissions + b.commissions) / b.trials : null,
+      // d′ with log-linear correction so perfect scores stay finite
+      dPrime: b.targets && b.nonTargets ? zInv((b.hits + 0.5) / (b.targets + 1)) - zInv((b.commissions + 0.5) / (b.nonTargets + 1)) : null,
       motionIndex: null, activeTimePct: null, bursts: null, meanActivityScore: null
     };
     if (motion.tracked) {
@@ -489,7 +525,27 @@ function analyze(r) {
     }
     return out;
   };
+  // Timing integrity: did the browser actually deliver the schedule?
+  const shown = trials.filter(t => t.shownMs != null).map(t => t.shownMs), lags = trials.map(t => t.onsetLag);
+  const avg = a => a.length ? a.reduce((x, v) => x + v, 0) / a.length : null;
+  const frameMs = r.frameGaps.length ? median(r.frameGaps) : null;
+  const timing = {
+    refreshHz: frameMs ? Math.round(1000 / frameMs) : null,
+    longFrames: frameMs ? r.frameGaps.filter(g => g > frameMs * 2.5).length : 0,
+    maxFrameGapMs: r.frameGaps.length ? Math.max(...r.frameGaps.slice(-200000)) : null,
+    meanOnsetLagMs: avg(lags), maxOnsetLagMs: lags.length ? Math.max(...lags) : null,
+    meanStimulusMs: avg(shown), minStimulusMs: shown.length ? Math.min(...shown) : null, maxStimulusMs: shown.length ? Math.max(...shown) : null,
+    skippedTrials: n - trials.length,
+    motionSampleHz: motion.tracked && D ? motion.t.length / (D / 1000) : null,
+    problems: []
+  };
+  if (timing.skippedTrials) timing.problems.push(timing.skippedTrials + ' trial(s) were never drawn');
+  if (timing.maxOnsetLagMs > 40) timing.problems.push('a stimulus appeared ' + Math.round(timing.maxOnsetLagMs) + ' ms late');
+  if (shown.length && (timing.minStimulusMs < 170 || timing.maxStimulusMs > 240)) timing.problems.push('stimulus time on screen ranged ' + Math.round(timing.minStimulusMs) + '–' + Math.round(timing.maxStimulusMs) + ' ms (target 200)');
+  if (timing.motionSampleHz != null && timing.motionSampleHz < 8) timing.problems.push('the camera was sampled only ' + timing.motionSampleHz.toFixed(1) + ' times per second');
+  timing.valid = n > 0 && !timing.problems.length;
   return {
+    timing, camInfo: r.camInfo,
     mode: r.mode, startedAt: r.startedAt, plannedTrials: r.planned, completedTrials: n, durationMs: D,
     stoppedEarly: r.stoppedEarly, stopReason: r.stopReason,
     overall: fin(all), quartiles: Q.map(fin), trials, motion
@@ -511,15 +567,19 @@ const ROWS = [
   { label: 'Omission errors (missed targets)', get: b => fmt.cntPct(b.omissions, b.omissionPct), raw: b => b.omissions },
   { label: 'Mean reaction time', get: b => fmt.ms(b.meanRtMs), raw: b => b.meanRtMs == null ? '' : b.meanRtMs.toFixed(1) },
   { label: 'Reaction time variability (SD)', get: b => fmt.ms(b.rtSdMs), raw: b => b.rtSdMs == null ? '' : b.rtSdMs.toFixed(1) },
+  { label: 'Normalised RT variation (SD ÷ mean)', get: b => fmt.pct(b.rtCvPct), raw: b => b.rtCvPct == null ? '' : b.rtCvPct.toFixed(2) },
   { group: 'Impulsivity' },
   { label: 'Commission errors (false presses)', get: b => fmt.cntPct(b.commissions, b.commissionPct), raw: b => b.commissions },
   { label: 'Anticipatory responses (< 150 ms)', get: b => fmt.int(b.anticipatory), raw: b => b.anticipatory },
+  { label: 'Multi-responses (extra presses in a trial)', get: b => fmt.int(b.extraPresses), raw: b => b.extraPresses },
   { group: 'Activity' },
   { label: 'Motion index (score × s)', get: b => fmt.f1(b.motionIndex), raw: b => b.motionIndex == null ? '' : b.motionIndex.toFixed(2) },
   { label: 'Active time', get: b => fmt.pct(b.activeTimePct), raw: b => b.activeTimePct == null ? '' : b.activeTimePct.toFixed(2) },
   { label: 'Micro-movement bursts', get: b => fmt.int(b.bursts), raw: b => b.bursts == null ? '' : b.bursts },
   { label: 'Mean activity score', get: b => fmt.f2(b.meanActivityScore), raw: b => b.meanActivityScore == null ? '' : b.meanActivityScore.toFixed(3) },
-  { group: 'Context' },
+  { group: 'Accuracy' },
+  { label: 'Error rate (omissions + commissions)', get: b => fmt.pct(b.errorRatePct), raw: b => b.errorRatePct == null ? '' : b.errorRatePct.toFixed(2) },
+  { label: 'Sensitivity d′ (higher = better discrimination)', get: b => fmt.f2(b.dPrime), raw: b => b.dPrime == null ? '' : b.dPrime.toFixed(3) },
   { label: 'Targets / trials', get: b => b.targets + ' / ' + b.trials, raw: b => b.targets + '/' + b.trials },
   { label: 'Correct hits', get: b => fmt.int(b.hits), raw: b => b.hits }
 ];
@@ -536,6 +596,13 @@ function renderResults(rep) {
   if (rep.mode === 'demo') notes.push('The demo has only a handful of targets — use it to check the mechanics, not as a measurement.');
   $('resNotes').innerHTML = notes.map(n => '<div class="note small">' + n + '</div>').join('');
 
+  const tm = rep.timing, r0 = v => v == null ? '—' : Math.round(v);
+  $('qualVerdict').innerHTML = !rep.completedTrials ? 'No trials to check.'
+    : tm.valid ? '<b>Timing check passed.</b> Every stimulus was drawn on schedule, so these numbers are a sound record of this run.'
+    : '<b>Timing check failed:</b> ' + tm.problems.join('; ') + '. Treat this run with caution — close other tabs and apps and repeat it.';
+  $('qualDetail').textContent = !rep.completedTrials ? '' : 'Display about ' + (tm.refreshHz || '—') + ' Hz · stimulus on screen ' + r0(tm.meanStimulusMs) + ' ms (range ' + r0(tm.minStimulusMs) + '–' + r0(tm.maxStimulusMs) +
+    ') · onset lag mean ' + r0(tm.meanOnsetLagMs) + ' ms, max ' + r0(tm.maxOnsetLagMs) + ' ms · long frames ' + tm.longFrames +
+    (tm.motionSampleHz != null ? ' · camera sampled ' + tm.motionSampleHz.toFixed(1) + ' times per second' : '');
   const cols = [...rep.quartiles, rep.overall];
   let h = '<thead><tr><th>Metric</th><th>Q1</th><th>Q2</th><th>Q3</th><th>Q4</th><th class="overall">Overall</th></tr></thead><tbody>';
   for (const row of ROWS) {
@@ -652,6 +719,7 @@ function renderComparison(rep, prior, saved) {
   const modeName = rep.mode === 'demo' ? 'demo' : 'full-test';
   const focusEl = $('cmpFocus'), table = $('cmpTable'), foot = $('cmpFoot');
   foot.textContent = !rep.completedTrials ? '' : rep.stoppedEarly ? 'This run was stopped early, so it was not added to your history.'
+    : !rep.timing.valid ? 'This run failed the timing check, so it was not added to your history.'
     : saved ? 'This session was saved to your history in this browser.' : 'This session could not be saved (browser storage is unavailable).';
   if (!rep.completedTrials) { focusEl.textContent = 'Nothing to compare.'; table.innerHTML = ''; return; }
   if (!prior.length) {
@@ -728,6 +796,8 @@ function exportJSON() {
     startedAt: rep.startedAt, mode: rep.mode, plannedTrials: rep.plannedTrials, completedTrials: rep.completedTrials,
     durationMs: rep.durationMs, stoppedEarly: rep.stoppedEarly, stopReason: rep.stopReason,
     config: { stimulusMs: CFG.stimMs, trialMs: CFG.trialMs, anticipatoryBelowMs: CFG.anticipMs, motionSampleMs: CFG.sampleMs },
+    timing: rep.timing,
+    environment: { userAgent: navigator.userAgent, screen: screen.width + 'x' + screen.height, devicePixelRatio: window.devicePixelRatio, camera: rep.camInfo },
     summary: { overall: rep.overall, Q1: rep.quartiles[0], Q2: rep.quartiles[1], Q3: rep.quartiles[2], Q4: rep.quartiles[3] },
     trials: rep.trials.map(t => ({ trial: t.i + 1, timeMs: t.timeMs, quartile: t.quartile, shape: t.shape, color: t.color, type: t.type, isTarget: t.isTarget,
                                    responded: t.rt != null, rtMs: r1(t.rt), outcome: t.outcome, extraPresses: t.extraPresses, stimulusShownMs: r1(t.shownMs) })),
