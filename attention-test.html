@@ -93,6 +93,14 @@ th:first-child, td:first-child { text-align: left; white-space: normal; }
 thead th { color: var(--text-2); font-weight: 600; font-size: 13px; }
 tr.group td { background: var(--surface-2); font-weight: 700; font-size: 12px; letter-spacing: .05em; text-transform: uppercase; color: var(--text-2); }
 td.overall, th.overall { font-weight: 700; border-left: 1px solid var(--border); }
+@media (max-width: 600px) {
+  th, td { padding: 6px 7px; font-size: 13px; }
+  th:first-child, td:first-child { position: sticky; left: 0; background: var(--surface); max-width: 148px; }
+  .card { padding: 12px; }
+}
+kbd { font: inherit; font-size: 12px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; background: var(--surface-2); }
+#respBtn, #stopBtn { white-space: nowrap; }
+@media (pointer: coarse) { .kbdhint { display: none; } }
 #chartWrap { position: relative; }
 #chart { display: block; width: 100%; }
 #chart text { fill: var(--text-2); font-size: 11px; font-family: inherit; }
@@ -174,8 +182,8 @@ td.overall, th.overall { font-weight: 700; border-left: 1px solid var(--border);
 <div id="stage" class="hidden">
   <div id="stim"></div>
   <div id="stageMsg"></div>
-  <button id="stopBtn">Stop (Esc)</button>
-  <button id="respBtn" tabindex="-1">MATCH (Space)</button>
+  <button id="stopBtn">Stop<span class="kbdhint"> (Esc)</span></button>
+  <button id="respBtn" tabindex="-1">MATCH<span class="kbdhint"> (Space)</span></button>
 </div>
 
 <main id="results" class="hidden">
@@ -372,13 +380,14 @@ function buildSequence(n) {
 }
 
 /* ---------------- Run control ---------------- */
-let run = null, lastReport = null, spaceDown = false, timers = [];
+let run = null, lastReport = null, spaceDown = false, timers = [], wake = null;
 const later = (fn, ms) => { const id = setTimeout(fn, ms); timers.push(id); return id; };
 
 function show(which) {
   el.setup.classList.toggle('hidden', which !== 'setup');
   el.stage.classList.toggle('hidden', which !== 'stage');
   el.results.classList.toggle('hidden', which !== 'results');
+  window.scrollTo(0, 0);
 }
 
 function startRun(mode) {
@@ -393,6 +402,8 @@ function startRun(mode) {
   if (hasCam) { try { const st = cam.stream.getVideoTracks()[0].getSettings(); run.camInfo = { width: st.width, height: st.height, frameRate: st.frameRate }; } catch (e) {} }
   el.stim.style.visibility = 'hidden';
   show('stage');
+  // keep the screen awake for the whole run where the browser supports it
+  if (navigator.wakeLock) navigator.wakeLock.request('screen').then(w => { if (run) wake = w; else w.release(); }).catch(() => {});
   if (el.stage.requestFullscreen) el.stage.requestFullscreen().then(() => { if (run) run.wentFullscreen = true; }).catch(() => {});
   const waitMs = hasCam ? (mode === 'demo' ? CFG.demoCalibMs : CFG.calibMs) : CFG.noCamCountdownMs;
   const title = hasCam ? 'Sit still — calibrating movement baseline' : 'Get ready';
@@ -448,6 +459,8 @@ function finish(early, reason) {
   run.phase = 'done';
   el.stim.style.visibility = 'hidden'; el.stageMsg.textContent = '';
   if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
+  if (wake) { wake.release().catch(() => {}); wake = null; }
+  if (!run.completed) { run = null; cam.prev = null; renderHistory(); show('setup'); return; }
   stopCamera();
   lastReport = analyze(run);
   run = null;
@@ -586,7 +599,7 @@ const ROWS = [
 
 function renderResults(rep) {
   $('resMeta').textContent = (rep.mode === 'demo' ? '30-second demo' : 'Full 20-minute test') + ' · ' +
-    new Date(rep.startedAt).toLocaleString() + ' · ' + rep.completedTrials + ' of ' + rep.plannedTrials + ' trials (' + clock(rep.durationMs) + ')';
+    new Date(rep.startedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) + ' · ' + rep.completedTrials + ' of ' + rep.plannedTrials + ' trials (' + clock(rep.durationMs) + ')';
   const notes = [];
   if (rep.stoppedEarly) notes.push(rep.stopReason === 'hidden' ? 'The test ended early because the tab was hidden. Quartiles split the completed portion into four equal parts.'
                                                                : 'Stopped early. Quartiles split the completed portion into four equal parts.');
@@ -714,7 +727,7 @@ const CMP = [
   { key: 'activeTimePct', label: 'Active time', unit: '%', dp: 1, tol: () => 2, focus: 'You moved for more of the session than usual. Next run, settle your posture before starting.' },
   { key: 'motionIndex', label: 'Motion index', unit: '', dp: 1, tol: avg => Math.max(1, avg * 0.1), focus: 'Your overall movement was higher than usual. Next run, check your seat and camera are stable before starting.' }
 ];
-const num = (v, m) => v == null ? '—' : v.toFixed(m.dp) + m.unit;
+const num = (v, m) => v == null ? '—' : v.toFixed(m.unit === '' && Number.isInteger(v) ? 0 : m.dp) + m.unit;
 function renderComparison(rep, prior, saved) {
   const modeName = rep.mode === 'demo' ? 'demo' : 'full-test';
   const focusEl = $('cmpFocus'), table = $('cmpTable'), foot = $('cmpFoot');
@@ -766,7 +779,7 @@ function renderHistory() {
   const cols = ['omissionPct', 'commissionPct', 'meanRtMs', 'rtSdMs', 'activeTimePct'].map(k => CMP.find(m => m.key === k));
   let h = '<thead><tr><th>Date</th><th>Type</th>' + cols.map(m => '<th>' + m.label + '</th>').join('') + '</tr></thead><tbody>';
   for (const r of a.slice(-20).reverse()) {
-    h += '<tr><td>' + new Date(r.startedAt).toLocaleString() + '</td><td>' + (r.mode === 'demo' ? 'Demo' : 'Full') + '</td>' + cols.map(m => '<td>' + num(r.overall[m.key], m) + '</td>').join('') + '</tr>';
+    h += '<tr><td style="white-space:nowrap">' + new Date(r.startedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) + '</td><td>' + (r.mode === 'demo' ? 'Demo' : 'Full') + '</td>' + cols.map(m => '<td>' + num(r.overall[m.key], m) + '</td>').join('') + '</tr>';
   }
   $('histTable').innerHTML = h + '</tbody>';
 }
