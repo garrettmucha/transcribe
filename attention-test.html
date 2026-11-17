@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Attention Test (CPT + Motion)</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #141413; --surface: #1e1e1c; --surface-2: #262623;
+  --text: #f0efec; --text-2: #c3c2b7; --muted: #8a897f; --border: #35352f;
+  --accent: #3987e5; --accent-ink: #ffffff;
+  --series: #3987e5; --hit: #199e70; --omission: #d95926; --commission: #e66767; --anticip: #9085e9;
+  --warn-bg: #3a2e12; --warn-border: #7a5c14; --warn-text: #f3d48a;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --bg: #f4f3ef; --surface: #fcfcfb; --surface-2: #efeee9;
+    --text: #0b0b0b; --text-2: #52514e; --muted: #7b7a73; --border: #dcdbd4;
+    --accent: #2a78d6; --accent-ink: #ffffff;
+    --series: #2a78d6; --hit: #1baf7a; --omission: #eb6834; --commission: #e34948; --anticip: #6250d6;
+    --warn-bg: #fdf3d7; --warn-border: #e2c264; --warn-text: #5c4300;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg); color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+main { max-width: 980px; margin: 0 auto; padding: 20px 16px 48px; }
+h1 { font-size: 22px; margin: 0 0 4px; }
+h2 { font-size: 16px; margin: 0 0 10px; }
+p { margin: 0 0 10px; }
+.sub { color: var(--text-2); margin-bottom: 14px; }
+.disclaimer {
+  background: var(--warn-bg); border: 1px solid var(--warn-border); color: var(--warn-text);
+  border-radius: 8px; padding: 10px 14px; margin-bottom: 18px; font-weight: 600;
+}
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+.grid { display: grid; grid-template-columns: 300px 1fr; gap: 16px; }
+@media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+button {
+  font: inherit; font-weight: 600; cursor: pointer; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text);
+  padding: 9px 14px;
+}
+button:hover { border-color: var(--muted); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.small { font-size: 13px; color: var(--text-2); }
+.hidden { display: none !important; }
+
+/* camera preview */
+.cam { position: relative; width: 100%; aspect-ratio: 4 / 3; background: #000; border-radius: 8px; overflow: hidden; }
+.cam video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); display: block; }
+.cam .roi { position: absolute; left: 20%; top: 5%; width: 60%; height: 90%; border: 2px dashed rgba(255,255,255,.75); border-radius: 6px; pointer-events: none; }
+.cam .off { position: absolute; inset: 0; display: grid; place-items: center; color: #bbb; text-align: center; padding: 12px; font-size: 13px; }
+.meter { height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; margin: 10px 0 4px; }
+.meter > div { height: 100%; width: 0; background: var(--series); border-radius: 4px; transition: width .08s linear; }
+.examples { display: flex; gap: 14px; align-items: center; background: #808080; border-radius: 8px; padding: 12px 16px; width: fit-content; margin: 6px 0 12px; }
+.ex { width: 34px; height: 34px; }
+.ex.circle { border-radius: 50%; }
+.ex.red { background: #d62828; } .ex.blue { background: #1d4ed8; }
+ul.tight { margin: 0 0 10px; padding-left: 20px; }
+
+#procVideo { position: fixed; left: 0; bottom: 0; width: 2px; height: 2px; opacity: 0; pointer-events: none; }
+
+/* test stage */
+#stage {
+  position: fixed; inset: 0; background: #808080; z-index: 10;
+  display: grid; place-items: center; user-select: none; -webkit-user-select: none; touch-action: manipulation; cursor: default;
+}
+#stim { width: min(32vmin, 260px); height: min(32vmin, 260px); visibility: hidden; }
+#stim.circle { border-radius: 50%; }
+#stim.red { background: #d62828; } #stim.blue { background: #1d4ed8; }
+#stageMsg { position: absolute; top: 50%; left: 0; right: 0; transform: translateY(-50%); text-align: center; color: #1c1c1c; font-size: 22px; font-weight: 600; padding: 0 20px; }
+#stageMsg small { display: block; font-size: 15px; font-weight: 400; margin-top: 8px; }
+#stopBtn { position: absolute; top: 12px; right: 12px; background: transparent; border-color: rgba(0,0,0,.25); color: rgba(0,0,0,.5); font-weight: 500; font-size: 12px; padding: 5px 10px; }
+#respBtn {
+  position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: rgba(0,0,0,.12); border-color: rgba(0,0,0,.25); color: rgba(0,0,0,.6);
+  padding: 14px 44px; font-size: 14px; letter-spacing: .04em;
+}
+
+/* results */
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th, td { padding: 7px 10px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; white-space: normal; }
+thead th { color: var(--text-2); font-weight: 600; font-size: 13px; }
+tr.group td { background: var(--surface-2); font-weight: 700; font-size: 12px; letter-spacing: .05em; text-transform: uppercase; color: var(--text-2); }
+td.overall, th.overall { font-weight: 700; border-left: 1px solid var(--border); }
+#chartWrap { position: relative; }
+#chart { display: block; width: 100%; }
+#chart text { fill: var(--text-2); font-size: 11px; font-family: inherit; }
+#chart .axis { stroke: var(--border); stroke-width: 1; }
+#chart .qline { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 2 4; }
+#chart .thr { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 5 4; }
+#chart .line { fill: none; stroke: var(--series); stroke-width: 2; stroke-linejoin: round; }
+#chart .area { fill: var(--series); opacity: .14; }
+#chart .cross { stroke: var(--text-2); stroke-width: 1; }
+#chart .lanebg { fill: var(--surface-2); }
+#tip {
+  position: absolute; pointer-events: none; background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 9px; font-size: 12px; line-height: 1.45; white-space: nowrap; z-index: 2;
+  box-shadow: 0 2px 8px rgba(0,0,0,.25);
+}
+#tip b { font-weight: 700; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--text-2); margin-top: 6px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
+.legend i.ln { height: 2px; width: 16px; border-radius: 0; vertical-align: 3px; }
+.note { background: var(--surface-2); border-radius: 8px; padding: 9px 12px; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+
+<main id="setup">
+  <div class="disclaimer">For educational and personal self-tracking purposes only. This is not a medical device and cannot diagnose ADHD or any medical condition.</div>
+  <h1>Attention Test</h1>
+  <p class="sub">Identical-pair continuous performance task with local webcam motion tracking.</p>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Camera</h2>
+      <div class="cam">
+        <video id="video" autoplay playsinline muted></video>
+        <div class="roi hidden" id="roi"></div>
+        <div class="off" id="camOff">Camera is off</div>
+      </div>
+      <div class="meter" title="Live movement"><div id="meterBar"></div></div>
+      <p class="small" id="camStatus">Enable the camera to track movement. Without it the test still runs, but activity metrics are skipped.</p>
+      <button id="camBtn">Enable camera</button>
+      <p class="small" style="margin-top:10px">Video is analysed frame-by-frame in this tab only. Nothing is recorded, saved, or sent anywhere.</p>
+    </div>
+
+    <div class="card">
+      <h2>Instructions</h2>
+      <p><strong>Press the SPACEBAR (or click the on-screen button) ONLY when the exact same shape AND color appear twice in a row. Do not press for non-matches.</strong></p>
+      <div class="examples" aria-label="The four stimuli">
+        <div class="ex circle red"></div><div class="ex circle blue"></div><div class="ex red"></div><div class="ex blue"></div>
+      </div>
+      <ul class="tight small">
+        <li>One shape flashes every 2 seconds (shown for 0.2 s, then a blank screen).</li>
+        <li>Sit so your head and shoulders fill the dashed box, about arm's length from the screen.</li>
+        <li>The test opens with a few seconds of calibration — sit still while it measures your camera's baseline noise.</li>
+        <li>Press <kbd>Esc</kbd> or the Stop button to end early; you still get a report for what you completed.</li>
+      </ul>
+      <div class="row">
+        <button id="demoBtn">Run 30-Second Demo</button>
+        <button id="fullBtn" class="primary">Run Full 20-Minute Test</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<!-- Analysis-only video: kept rendered (but invisible) so frames keep decoding while the setup screen is hidden. -->
+<video id="procVideo" autoplay playsinline muted aria-hidden="true"></video>
+
+<div id="stage" class="hidden">
+  <div id="stim"></div>
+  <div id="stageMsg"></div>
+  <button id="stopBtn">Stop (Esc)</button>
+  <button id="respBtn" tabindex="-1">MATCH (Space)</button>
+</div>
+
+<main id="results" class="hidden">
+  <div class="disclaimer">For educational and personal self-tracking purposes only. This is not a medical device and cannot diagnose ADHD or any medical condition.</div>
+  <h1>Results</h1>
+  <p class="sub" id="resMeta"></p>
+  <div id="resNotes"></div>
+
+  <div class="card">
+    <h2>Quartile breakdown</h2>
+    <div class="tablewrap"><table id="resTable"></table></div>
+  </div>
+
+  <div class="card">
+    <h2>Movement and response events over time</h2>
+    <div id="chartWrap"><svg id="chart" role="img" aria-label="Timeline of movement activity and response events across the four quartiles"></svg><div id="tip" class="hidden"></div></div>
+    <div class="legend">
+      <span><i class="ln" style="background:var(--series)"></i>Activity score (1.0 = movement threshold)</span>
+      <span><i style="background:var(--hit)"></i>Hit</span>
+      <span><i style="background:var(--omission)"></i>Omission</span>
+      <span><i style="background:var(--commission)"></i>Commission</span>
+      <span><i style="background:var(--anticip)"></i>Anticipatory</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Save</h2>
+    <div class="row">
+      <button id="jsonBtn" class="primary">Export Results as JSON</button>
+      <button id="csvSumBtn">Export summary CSV</button>
+      <button id="csvTrialBtn">Export trials CSV</button>
+      <button id="againBtn">New test</button>
+    </div>
+    <p class="small" style="margin-top:10px">Files are generated in your browser and saved to your downloads folder. Nothing is uploaded.</p>
+  </div>
+
+  <div class="card small">
+    <h2>How the numbers are computed</h2>
+    <ul class="tight">
+      <li><b>Omission</b>: a target (exact repeat) with no press in its 2-second window. <b>Commission</b>: a press on a non-target (lure or different) at 150 ms or later.</li>
+      <li><b>Anticipatory</b>: any press faster than 150 ms after stimulus onset. These are counted on their own and excluded from hits, commissions and reaction-time statistics.</li>
+      <li><b>Mean RT / RT variability</b>: mean and sample standard deviation of reaction times for correct hits.</li>
+      <li><b>Activity score</b>: frame-to-frame luminance change inside the dashed box, minus your calibration baseline, scaled so 1.0 is the movement threshold. <b>Motion index</b>: area under that score (score × seconds). <b>Active time</b>: share of samples at or above the threshold. <b>Bursts</b>: separate runs of above-threshold movement.</li>
+      <li>Lighting changes, camera auto-exposure and people moving behind you all register as movement. Compare sessions only when recorded in the same setup.</li>
+    </ul>
+  </div>
+</main>
+
+<script>
+(() => {
+'use strict';
+
+const CFG = {
+  stimMs: 200, trialMs: 2000, anticipMs: 150,
+  fullTrials: 600, demoTrials: 15,
+  sampleMs: 80,            // ~12.5 FPS motion sampling
+  calibMs: 5000, demoCalibMs: 3000, noCamCountdownMs: 3000, leadInMs: 1000,
+  grabW: 64, grabH: 48,    // downscaled analysis frame
+  roi: { x: 0.2, y: 0.05, w: 0.6, h: 0.9 },
+  burstGapSamples: 4       // below-threshold samples that end a burst
+};
+const STIMS = [
+  { shape: 'circle', color: 'red' }, { shape: 'square', color: 'red' },
+  { shape: 'circle', color: 'blue' }, { shape: 'square', color: 'blue' }
+]; // index bit0 = shape, bit1 = color
+
+const $ = id => document.getElementById(id);
+const el = {
+  setup: $('setup'), stage: $('stage'), results: $('results'),
+  video: $('video'), proc: $('procVideo'), roi: $('roi'), camOff: $('camOff'), camStatus: $('camStatus'), camBtn: $('camBtn'), meterBar: $('meterBar'),
+  stim: $('stim'), stageMsg: $('stageMsg'), respBtn: $('respBtn'),
+  chart: $('chart'), tip: $('tip'), chartWrap: $('chartWrap')
+};
+
+/* ---------------- Camera + motion energy ---------------- */
+const cam = { stream: null, wanted: false, prev: null, timer: null, lastE: 0 };
+const grab = document.createElement('canvas');   // offscreen; never attached to the page
+grab.width = CFG.grabW; grab.height = CFG.grabH;
+const gctx = grab.getContext('2d', { willReadFrequently: true });
+const RX = Math.round(CFG.roi.x * CFG.grabW), RY = Math.round(CFG.roi.y * CFG.grabH);
+const RW = Math.round(CFG.roi.w * CFG.grabW), RH = Math.round(CFG.roi.h * CFG.grabH);
+
+async function startCamera() {
+  cam.wanted = true;
+  if (cam.stream) return true;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    el.camStatus.textContent = 'This browser does not expose a camera here. Try opening the file via http://localhost instead of file://.';
+    return false;
+  }
+  try {
+    cam.stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }, audio: false });
+  } catch (err) {
+    el.camStatus.textContent = 'Camera unavailable (' + (err && err.name || 'error') + '). The test will run without motion tracking.';
+    return false;
+  }
+  el.video.srcObject = cam.stream; el.proc.srcObject = cam.stream;
+  el.proc.play().catch(() => {});
+  el.camOff.classList.add('hidden'); el.roi.classList.remove('hidden');
+  el.camBtn.textContent = 'Turn camera off';
+  el.camStatus.textContent = 'Camera on. Centre your head and shoulders in the dashed box.';
+  cam.prev = null;
+  cam.timer = setInterval(sampleMotion, CFG.sampleMs);
+  return true;
+}
+function stopCamera() {
+  if (cam.timer) clearInterval(cam.timer);
+  cam.timer = null;
+  if (cam.stream) cam.stream.getTracks().forEach(t => t.stop());
+  cam.stream = null; cam.prev = null;
+  el.video.srcObject = null; el.proc.srcObject = null;
+  el.camOff.classList.remove('hidden'); el.roi.classList.add('hidden');
+  el.camBtn.textContent = 'Enable camera';
+  el.meterBar.style.width = '0';
+}
+function sampleMotion() {
+  if (!cam.stream || el.proc.readyState < 2) return;
+  gctx.drawImage(el.proc, 0, 0, CFG.grabW, CFG.grabH);
+  const d = gctx.getImageData(RX, RY, RW, RH).data;
+  const n = RW * RH, lum = new Uint8Array(n);
+  for (let i = 0, j = 0; i < n; i++, j += 4) lum[i] = (d[j] * 77 + d[j + 1] * 150 + d[j + 2] * 29) >> 8;
+  const now = performance.now();
+  if (cam.prev) {
+    let sum = 0;
+    for (let i = 0; i < n; i++) { const diff = lum[i] - cam.prev[i]; sum += diff < 0 ? -diff : diff; }
+    const e = sum / (n * 255);                 // motion energy, 0..1
+    cam.lastE = e;
+    if (run && run.phase === 'calib') run.calib.push(e);
+    else if (run && run.phase === 'test') { const t = now - run.t0; if (t >= 0) { run.mt.push(t); run.me.push(e); } }
+    else el.meterBar.style.width = Math.min(100, e / 0.03 * 100) + '%';
+  }
+  cam.prev = lum;
+}
+function median(a) { const s = Array.from(a).sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; }
+function calibrate(samples) {
+  if (samples.length < 10) return { baseline: 0.004, threshold: 0.012, samples: samples.length, fallback: true };
+  const base = median(samples), mad = median(samples.map(v => Math.abs(v - base)));
+  const thr = Math.max(base + 4 * 1.4826 * mad, base * 1.6, base + 0.003);
+  return { baseline: base, threshold: thr, samples: samples.length, fallback: false };
+}
+
+/* ---------------- Trial sequence ---------------- */
+function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+function buildSequence(n) {
+  // Exact 25% target / 25% lure / 50% different mix (of trials after the first), in shuffled order.
+  const rest = n - 1, nT = Math.round(rest * 0.25), nL = Math.round(rest * 0.25);
+  const types = shuffle([...Array(nT).fill('target'), ...Array(nL).fill('lure'), ...Array(rest - nT - nL).fill('different')]);
+  let prev = Math.floor(Math.random() * 4);
+  const seq = [{ i: 0, stim: prev, type: 'first' }];
+  types.forEach((type, k) => {
+    let s;
+    if (type === 'target') s = prev;
+    else if (type === 'lure') s = prev ^ (Math.random() < 0.5 ? 1 : 2);   // change shape OR color
+    else s = prev ^ 3;                                                    // change both
+    seq.push({ i: k + 1, stim: s, type });
+    prev = s;
+  });
+  seq.forEach(t => { t.shape = STIMS[t.stim].shape; t.color = STIMS[t.stim].color; t.isTarget = t.type === 'target'; t.onset = null; t.shownMs = null; t.rt = null; t.extraPresses = 0; t.outcome = null; });
+  return seq;
+}
+
+/* ---------------- Run control ---------------- */
+let run = null, lastReport = null, spaceDown = false, timers = [];
+const later = (fn, ms) => { const id = setTimeout(fn, ms); timers.push(id); return id; };
+
+function show(which) {
+  el.setup.classList.toggle('hidden', which !== 'setup');
+  el.stage.classList.toggle('hidden', which !== 'stage');
+  el.results.classList.toggle('hidden', which !== 'results');
+}
+
+function startRun(mode) {
+  const n = mode === 'demo' ? CFG.demoTrials : CFG.fullTrials;
+  const hasCam = !!cam.stream;
+  run = {
+    mode, planned: n, trials: buildSequence(n), startedAt: new Date().toISOString(),
+    phase: hasCam ? 'calib' : 'countdown', hasCam, calib: [], cal: null,
+    t0: 0, cur: -1, stimOn: false, mt: [], me: [], completed: 0, stoppedEarly: false, stopReason: null, wentFullscreen: false
+  };
+  el.stim.style.visibility = 'hidden';
+  show('stage');
+  if (el.stage.requestFullscreen) el.stage.requestFullscreen().then(() => { if (run) run.wentFullscreen = true; }).catch(() => {});
+  const waitMs = hasCam ? (mode === 'demo' ? CFG.demoCalibMs : CFG.calibMs) : CFG.noCamCountdownMs;
+  const title = hasCam ? 'Sit still — calibrating movement baseline' : 'Get ready';
+  for (let s = Math.ceil(waitMs / 1000); s >= 1; s--) {
+    later(() => { el.stageMsg.innerHTML = title + '<small>Starting in ' + s + '…  Press only for an exact repeat.</small>'; }, waitMs - s * 1000);
+  }
+  later(beginTest, waitMs);
+}
+
+function beginTest() {
+  if (!run) return;
+  if (run.hasCam) run.cal = calibrate(run.calib);
+  el.stageMsg.textContent = '';
+  run.t0 = performance.now() + CFG.leadInMs;
+  run.phase = 'test';
+  requestAnimationFrame(frame);
+}
+
+function frame() {
+  if (!run || run.phase !== 'test') return;
+  const now = performance.now(), elapsed = now - run.t0;
+  if (elapsed >= 0) {
+    const idx = Math.floor(elapsed / CFG.trialMs);
+    if (idx !== run.cur) {
+      if (idx >= run.trials.length) { run.completed = run.trials.length; finish(false); return; }
+      run.cur = idx;
+      const t = run.trials[idx];
+      el.stim.className = t.shape + ' ' + t.color;
+      el.stim.style.visibility = 'visible';
+      t.onset = performance.now(); run.stimOn = true;
+    } else if (run.stimOn) {
+      const t = run.trials[run.cur];
+      if (now - t.onset >= CFG.stimMs - 4) { el.stim.style.visibility = 'hidden'; run.stimOn = false; t.shownMs = now - t.onset; }
+    }
+  }
+  requestAnimationFrame(frame);
+}
+
+function registerPress() {
+  const now = performance.now();
+  if (!run || run.phase !== 'test' || run.cur < 0) return;
+  const t = run.trials[run.cur];
+  if (t.onset == null) return;
+  if (t.rt == null) t.rt = now - t.onset; else t.extraPresses++;
+}
+
+function finish(early, reason) {
+  if (!run || run.phase === 'done') return;
+  timers.forEach(clearTimeout); timers = [];
+  if (early) { run.stoppedEarly = true; run.stopReason = reason || 'stopped'; run.completed = run.phase === 'test' ? Math.max(0, run.cur) : 0; }
+  run.phase = 'done';
+  el.stim.style.visibility = 'hidden'; el.stageMsg.textContent = '';
+  if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
+  stopCamera();
+  lastReport = analyze(run);
+  run = null;
+  show('results');
+  renderResults(lastReport);
+}
+
+/* ---------------- Analysis ---------------- */
+function analyze(r) {
+  const n = r.completed, D = n * CFG.trialMs, qLen = D / 4;
+  const mk = () => ({ trials: 0, targets: 0, nonTargets: 0, hits: 0, omissions: 0, commissions: 0, commissionsOnLures: 0, commissionsOnDifferent: 0, anticipatory: 0, extraPresses: 0, rts: [],
+                      mSamples: 0, mActive: 0, mScoreSum: 0, motionIndex: 0, bursts: 0 });
+  const Q = [mk(), mk(), mk(), mk()], all = mk();
+  const qOf = t => Math.min(3, Math.max(0, Math.floor(t / qLen)));
+  const trials = [];
+  for (let i = 0; i < n; i++) {
+    const t = r.trials[i];
+    if (t.onset == null) continue;                       // frame was skipped; never shown
+    const q = qOf(i * CFG.trialMs);
+    t.quartile = q + 1; t.timeMs = i * CFG.trialMs;
+    if (t.rt != null && t.rt < CFG.anticipMs) t.outcome = 'anticipatory';
+    else if (t.isTarget) t.outcome = t.rt == null ? 'omission' : 'hit';
+    else t.outcome = t.rt == null ? 'correct_rejection' : 'commission';
+    for (const b of [Q[q], all]) {
+      b.trials++; b.extraPresses += t.extraPresses;
+      if (t.isTarget) b.targets++; else b.nonTargets++;
+      if (t.outcome === 'hit') { b.hits++; b.rts.push(t.rt); }
+      else if (t.outcome === 'omission') b.omissions++;
+      else if (t.outcome === 'anticipatory') b.anticipatory++;
+      else if (t.outcome === 'commission') { b.commissions++; if (t.type === 'lure') b.commissionsOnLures++; else b.commissionsOnDifferent++; }
+    }
+    trials.push(t);
+  }
+  // Motion
+  const motion = { tracked: r.hasCam && r.mt.length > 0, t: [], score: [], bursts: [], calibration: r.cal };
+  if (motion.tracked) {
+    const base = r.cal.baseline, span = r.cal.threshold - r.cal.baseline;
+    let inBurst = false, quiet = 0, bStart = 0, bEnd = 0, prevT = null;
+    const closeBurst = () => { motion.bursts.push({ startMs: Math.round(bStart), endMs: Math.round(bEnd) }); const q = qOf(bStart); Q[q].bursts++; all.bursts++; inBurst = false; };
+    for (let i = 0; i < r.mt.length; i++) {
+      const t = r.mt[i]; if (t >= D) break;
+      const s = Math.max(0, r.me[i] - base) / span;
+      const dt = Math.min(0.5, (prevT == null ? CFG.sampleMs : t - prevT) / 1000); prevT = t;
+      motion.t.push(t); motion.score.push(s);
+      const active = s >= 1;
+      for (const b of [Q[qOf(t)], all]) { b.mSamples++; b.mScoreSum += s; b.motionIndex += s * dt; if (active) b.mActive++; }
+      if (active) { if (!inBurst) { inBurst = true; bStart = t; } bEnd = t; quiet = 0; }
+      else if (inBurst && ++quiet >= CFG.burstGapSamples) closeBurst();
+    }
+    if (inBurst) closeBurst();
+  }
+  const fin = b => {
+    const k = b.rts.length, mean = k ? b.rts.reduce((a, v) => a + v, 0) / k : null;
+    const sd = k > 1 ? Math.sqrt(b.rts.reduce((a, v) => a + (v - mean) ** 2, 0) / (k - 1)) : null;
+    const out = {
+      trials: b.trials, targets: b.targets, nonTargets: b.nonTargets, hits: b.hits,
+      omissions: b.omissions, omissionPct: b.targets ? 100 * b.omissions / b.targets : null,
+      meanRtMs: mean, rtSdMs: sd,
+      commissions: b.commissions, commissionPct: b.nonTargets ? 100 * b.commissions / b.nonTargets : null,
+      commissionsOnLures: b.commissionsOnLures, commissionsOnDifferent: b.commissionsOnDifferent,
+      anticipatory: b.anticipatory, extraPresses: b.extraPresses,
+      motionIndex: null, activeTimePct: null, bursts: null, meanActivityScore: null
+    };
+    if (motion.tracked) {
+      out.motionIndex = b.motionIndex; out.bursts = b.bursts;
+      out.activeTimePct = b.mSamples ? 100 * b.mActive / b.mSamples : null;
+      out.meanActivityScore = b.mSamples ? b.mScoreSum / b.mSamples : null;
+    }
+    return out;
+  };
+  return {
+    mode: r.mode, startedAt: r.startedAt, plannedTrials: r.planned, completedTrials: n, durationMs: D,
+    stoppedEarly: r.stoppedEarly, stopReason: r.stopReason,
+    overall: fin(all), quartiles: Q.map(fin), trials, motion
+  };
+}
+
+/* ---------------- Results rendering ---------------- */
+const fmt = {
+  int: v => v == null ? '—' : String(v),
+  ms: v => v == null ? '—' : Math.round(v) + ' ms',
+  pct: v => v == null ? '—' : v.toFixed(1) + '%',
+  f1: v => v == null ? '—' : v.toFixed(1),
+  f2: v => v == null ? '—' : v.toFixed(2),
+  cntPct: (c, p) => p == null ? String(c) : c + ' (' + p.toFixed(0) + '%)'
+};
+const clock = ms => { const s = Math.round(ms / 1000); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+const ROWS = [
+  { group: 'Inattention' },
+  { label: 'Omission errors (missed targets)', get: b => fmt.cntPct(b.omissions, b.omissionPct), raw: b => b.omissions },
+  { label: 'Mean reaction time', get: b => fmt.ms(b.meanRtMs), raw: b => b.meanRtMs == null ? '' : b.meanRtMs.toFixed(1) },
+  { label: 'Reaction time variability (SD)', get: b => fmt.ms(b.rtSdMs), raw: b => b.rtSdMs == null ? '' : b.rtSdMs.toFixed(1) },
+  { group: 'Impulsivity' },
+  { label: 'Commission errors (false presses)', get: b => fmt.cntPct(b.commissions, b.commissionPct), raw: b => b.commissions },
+  { label: 'Anticipatory responses (< 150 ms)', get: b => fmt.int(b.anticipatory), raw: b => b.anticipatory },
+  { group: 'Activity' },
+  { label: 'Motion index (score × s)', get: b => fmt.f1(b.motionIndex), raw: b => b.motionIndex == null ? '' : b.motionIndex.toFixed(2) },
+  { label: 'Active time', get: b => fmt.pct(b.activeTimePct), raw: b => b.activeTimePct == null ? '' : b.activeTimePct.toFixed(2) },
+  { label: 'Micro-movement bursts', get: b => fmt.int(b.bursts), raw: b => b.bursts == null ? '' : b.bursts },
+  { label: 'Mean activity score', get: b => fmt.f2(b.meanActivityScore), raw: b => b.meanActivityScore == null ? '' : b.meanActivityScore.toFixed(3) },
+  { group: 'Context' },
+  { label: 'Targets / trials', get: b => b.targets + ' / ' + b.trials, raw: b => b.targets + '/' + b.trials },
+  { label: 'Correct hits', get: b => fmt.int(b.hits), raw: b => b.hits }
+];
+
+function renderResults(rep) {
+  $('resMeta').textContent = (rep.mode === 'demo' ? '30-second demo' : 'Full 20-minute test') + ' · ' +
+    new Date(rep.startedAt).toLocaleString() + ' · ' + rep.completedTrials + ' of ' + rep.plannedTrials + ' trials (' + clock(rep.durationMs) + ')';
+  const notes = [];
+  if (rep.stoppedEarly) notes.push(rep.stopReason === 'hidden' ? 'The test ended early because the tab was hidden. Quartiles split the completed portion into four equal parts.'
+                                                               : 'Stopped early. Quartiles split the completed portion into four equal parts.');
+  if (!rep.completedTrials) notes.push('No trials were completed, so there is nothing to score.');
+  if (!rep.motion.tracked) notes.push('Camera was off, so activity metrics were not recorded.');
+  else if (rep.motion.calibration.fallback) notes.push('Calibration got too few camera frames; a default movement threshold was used.');
+  if (rep.mode === 'demo') notes.push('The demo has only a handful of targets — use it to check the mechanics, not as a measurement.');
+  $('resNotes').innerHTML = notes.map(n => '<div class="note small">' + n + '</div>').join('');
+
+  const cols = [...rep.quartiles, rep.overall];
+  let h = '<thead><tr><th>Metric</th><th>Q1</th><th>Q2</th><th>Q3</th><th>Q4</th><th class="overall">Overall</th></tr></thead><tbody>';
+  for (const row of ROWS) {
+    if (row.group) { h += '<tr class="group"><td colspan="6">' + row.group + '</td></tr>'; continue; }
+    h += '<tr><td>' + row.label + '</td>' + cols.map((b, i) => '<td' + (i === 4 ? ' class="overall"' : '') + '>' + row.get(b) + '</td>').join('') + '</tr>';
+  }
+  $('resTable').innerHTML = h + '</tbody>';
+  drawChart(rep);
+}
+
+const LANES = [
+  { key: 'hit', label: 'Hits', color: 'var(--hit)' },
+  { key: 'omission', label: 'Omissions', color: 'var(--omission)' },
+  { key: 'commission', label: 'Commissions', color: 'var(--commission)' },
+  { key: 'anticipatory', label: 'Anticipatory', color: 'var(--anticip)' }
+];
+const OUTCOME_LABEL = { hit: 'Hit', omission: 'Omission (missed target)', commission: 'Commission (false press)', anticipatory: 'Anticipatory press', correct_rejection: 'Correctly withheld' };
+let chartState = null;
+
+function drawChart(rep) {
+  const svg = el.chart, W = Math.max(320, el.chartWrap.clientWidth), D = rep.durationMs;
+  const L = 92, R = 14, T = 22, PH = 150, GAP = 22, LH = 22, AX = 26;
+  const H = T + PH + GAP + LANES.length * LH + AX, PW = W - L - R;
+  svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H); svg.setAttribute('height', H);
+  if (!D) { svg.innerHTML = '<text x="' + W / 2 + '" y="' + H / 2 + '" text-anchor="middle">No data</text>'; chartState = null; return; }
+  const x = t => L + t / D * PW;
+  const laneTop = T + PH + GAP;
+  let s = '';
+  // quartile guides + labels
+  for (let q = 0; q < 4; q++) {
+    s += '<text x="' + x((q + 0.5) * D / 4) + '" y="12" text-anchor="middle" style="font-weight:700">Q' + (q + 1) + '</text>';
+    if (q) s += '<line class="qline" x1="' + x(q * D / 4) + '" x2="' + x(q * D / 4) + '" y1="' + (T - 4) + '" y2="' + (laneTop + LANES.length * LH) + '"/>';
+  }
+  // activity panel
+  const bins = Math.max(10, Math.floor(PW / 2)), binMax = new Float32Array(bins);
+  let yMax = 2;
+  if (rep.motion.tracked) {
+    const mt = rep.motion.t, ms = rep.motion.score;
+    for (let i = 0; i < mt.length; i++) { const b = Math.min(bins - 1, Math.floor(mt[i] / D * bins)); if (ms[i] > binMax[b]) binMax[b] = ms[i]; }
+    for (let b = 0; b < bins; b++) if (binMax[b] > yMax) yMax = binMax[b];
+    yMax = Math.ceil(yMax);
+    const y = v => T + PH - v / yMax * PH;
+    let path = '';
+    for (let b = 0; b < bins; b++) path += (b ? 'L' : 'M') + (L + (b + 0.5) / bins * PW).toFixed(1) + ' ' + y(binMax[b]).toFixed(1);
+    s += '<path class="area" d="' + path + 'L' + (L + PW) + ' ' + (T + PH) + 'L' + L + ' ' + (T + PH) + 'Z"/>';
+    s += '<path class="line" d="' + path + '"/>';
+    s += '<line class="thr" x1="' + L + '" x2="' + (L + PW) + '" y1="' + y(1) + '" y2="' + y(1) + '"/>';
+    s += '<text x="' + (L - 6) + '" y="' + (y(1) + 4) + '" text-anchor="end">threshold 1.0</text>';
+    s += '<text x="' + (L - 6) + '" y="' + (T + 8) + '" text-anchor="end">' + yMax.toFixed(0) + '</text>';
+    s += '<text x="' + (L - 6) + '" y="' + (T + PH + 4) + '" text-anchor="end">0</text>';
+  } else {
+    s += '<text x="' + (L + PW / 2) + '" y="' + (T + PH / 2) + '" text-anchor="middle">Motion tracking was off for this run</text>';
+  }
+  s += '<line class="axis" x1="' + L + '" x2="' + (L + PW) + '" y1="' + (T + PH) + '" y2="' + (T + PH) + '"/>';
+  // event lanes
+  LANES.forEach((ln, k) => {
+    const cy = laneTop + k * LH + LH / 2, evs = rep.trials.filter(t => t.outcome === ln.key);
+    s += '<rect class="lanebg" x="' + L + '" y="' + (cy - LH / 2 + 2) + '" width="' + PW + '" height="' + (LH - 4) + '" rx="3"/>';
+    s += '<text x="' + (L - 6) + '" y="' + (cy + 4) + '" text-anchor="end">' + ln.label + ' ' + evs.length + '</text>';
+    for (const t of evs) s += '<circle cx="' + x(t.timeMs + (t.rt || 0)).toFixed(1) + '" cy="' + cy + '" r="4" style="fill:' + ln.color + ';stroke:var(--surface-2);stroke-width:1"/>';
+  });
+  // time axis
+  const axY = laneTop + LANES.length * LH;
+  const steps = [5000, 10000, 30000, 60000, 120000, 300000], step = steps.find(v => D / v <= Math.max(3, PW / 90)) || 300000;
+  for (let t = 0; t <= D + 1; t += step) {
+    s += '<line class="axis" x1="' + x(t) + '" x2="' + x(t) + '" y1="' + axY + '" y2="' + (axY + 4) + '"/>';
+    s += '<text x="' + x(t) + '" y="' + (axY + 17) + '" text-anchor="middle">' + clock(t) + '</text>';
+  }
+  s += '<line id="cross" class="cross" y1="' + T + '" y2="' + axY + '" x1="0" x2="0" visibility="hidden"/>';
+  s += '<rect id="hit" x="' + L + '" y="' + T + '" width="' + PW + '" height="' + (axY - T) + '" fill="transparent"/>';
+  svg.innerHTML = s;
+  chartState = { rep, L, PW, D, bins, binMax, W };
+}
+
+function chartHover(ev) {
+  if (!chartState) return;
+  const { rep, L, PW, D, bins, binMax } = chartState;
+  const box = el.chart.getBoundingClientRect(), px = ev.clientX - box.left;
+  if (px < L || px > L + PW) { chartLeave(); return; }
+  const t = (px - L) / PW * D, cross = $('cross');
+  cross.setAttribute('x1', px); cross.setAttribute('x2', px); cross.setAttribute('visibility', 'visible');
+  const trial = rep.trials.find(tr => tr.i === Math.min(rep.completedTrials - 1, Math.floor(t / CFG.trialMs)));
+  let h = '<b>' + clock(t) + '</b> · Q' + (Math.min(3, Math.floor(t / (D / 4))) + 1);
+  if (rep.motion.tracked) h += '<br>Activity <b>' + binMax[Math.min(bins - 1, Math.floor(t / D * bins))].toFixed(2) + '</b>';
+  if (trial) h += '<br>Trial ' + (trial.i + 1) + ': ' + trial.color + ' ' + trial.shape + ' (' + trial.type + ')<br>' + OUTCOME_LABEL[trial.outcome] + (trial.rt != null ? ' · <b>' + Math.round(trial.rt) + ' ms</b>' : '');
+  el.tip.innerHTML = h; el.tip.classList.remove('hidden');
+  const tw = el.tip.offsetWidth;
+  el.tip.style.left = (px + 14 + tw > box.width ? px - tw - 14 : px + 14) + 'px';
+  el.tip.style.top = '26px';
+}
+function chartLeave() { el.tip.classList.add('hidden'); const c = $('cross'); if (c) c.setAttribute('visibility', 'hidden'); }
+
+/* ---------------- Export ---------------- */
+function download(name, text, type) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = document.createElement('a'); a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+const stamp = rep => rep.startedAt.replace(/[:.]/g, '-').slice(0, 19);
+const csvCell = v => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+const r1 = v => v == null ? null : Math.round(v * 10) / 10;
+
+function exportJSON() {
+  const rep = lastReport; if (!rep) return;
+  const perSecond = [];
+  if (rep.motion.tracked) {
+    const acc = new Map();
+    rep.motion.t.forEach((t, i) => { const k = Math.floor(t / 1000), a = acc.get(k) || { sum: 0, n: 0, max: 0 }; a.sum += rep.motion.score[i]; a.n++; a.max = Math.max(a.max, rep.motion.score[i]); acc.set(k, a); });
+    for (const [k, a] of acc) perSecond.push({ second: k, meanScore: +(a.sum / a.n).toFixed(3), maxScore: +a.max.toFixed(3) });
+  }
+  const out = {
+    app: 'attention-test', version: 1,
+    disclaimer: 'For educational and personal self-tracking purposes only. This is not a medical device and cannot diagnose ADHD or any medical condition.',
+    startedAt: rep.startedAt, mode: rep.mode, plannedTrials: rep.plannedTrials, completedTrials: rep.completedTrials,
+    durationMs: rep.durationMs, stoppedEarly: rep.stoppedEarly, stopReason: rep.stopReason,
+    config: { stimulusMs: CFG.stimMs, trialMs: CFG.trialMs, anticipatoryBelowMs: CFG.anticipMs, motionSampleMs: CFG.sampleMs },
+    summary: { overall: rep.overall, Q1: rep.quartiles[0], Q2: rep.quartiles[1], Q3: rep.quartiles[2], Q4: rep.quartiles[3] },
+    trials: rep.trials.map(t => ({ trial: t.i + 1, timeMs: t.timeMs, quartile: t.quartile, shape: t.shape, color: t.color, type: t.type, isTarget: t.isTarget,
+                                   responded: t.rt != null, rtMs: r1(t.rt), outcome: t.outcome, extraPresses: t.extraPresses, stimulusShownMs: r1(t.shownMs) })),
+    motion: { tracked: rep.motion.tracked, calibration: rep.motion.calibration, bursts: rep.motion.bursts, perSecond }
+  };
+  download('attention-test-' + stamp(rep) + '.json', JSON.stringify(out, null, 2), 'application/json');
+}
+function exportSummaryCSV() {
+  const rep = lastReport; if (!rep) return;
+  const cols = [...rep.quartiles, rep.overall];
+  const lines = [['metric', 'Q1', 'Q2', 'Q3', 'Q4', 'overall']];
+  for (const row of ROWS) if (!row.group) lines.push([row.label, ...cols.map(row.raw)]);
+  lines.push(['Omission %', ...cols.map(b => b.omissionPct == null ? '' : b.omissionPct.toFixed(2))]);
+  lines.push(['Commission %', ...cols.map(b => b.commissionPct == null ? '' : b.commissionPct.toFixed(2))]);
+  download('attention-test-summary-' + stamp(rep) + '.csv', lines.map(l => l.map(csvCell).join(',')).join('\n') + '\n', 'text/csv');
+}
+function exportTrialsCSV() {
+  const rep = lastReport; if (!rep) return;
+  const lines = [['trial', 'time_ms', 'quartile', 'shape', 'color', 'type', 'is_target', 'responded', 'rt_ms', 'outcome', 'extra_presses']];
+  for (const t of rep.trials) lines.push([t.i + 1, t.timeMs, t.quartile, t.shape, t.color, t.type, t.isTarget, t.rt != null, t.rt == null ? '' : t.rt.toFixed(1), t.outcome, t.extraPresses]);
+  download('attention-test-trials-' + stamp(rep) + '.csv', lines.map(l => l.map(csvCell).join(',')).join('\n') + '\n', 'text/csv');
+}
+
+/* ---------------- Events ---------------- */
+el.camBtn.addEventListener('click', () => { if (cam.stream) { cam.wanted = false; stopCamera(); el.camStatus.textContent = 'Camera off. The test will run without motion tracking.'; } else startCamera(); });
+$('demoBtn').addEventListener('click', () => startRun('demo'));
+$('fullBtn').addEventListener('click', () => startRun('full'));
+$('stopBtn').addEventListener('pointerdown', e => e.stopPropagation());
+$('stopBtn').addEventListener('click', () => finish(true, 'stopped'));
+el.stage.addEventListener('pointerdown', e => { e.preventDefault(); registerPress(); });
+el.stage.addEventListener('contextmenu', e => e.preventDefault());
+
+document.addEventListener('keydown', e => {
+  if (!run) return;
+  if (e.code === 'Space' || e.key === ' ') {
+    e.preventDefault();
+    if (e.repeat || spaceDown) return;         // ignore auto-repeat while the key is held
+    spaceDown = true; registerPress();
+  } else if (e.key === 'Escape') finish(true, 'stopped');
+});
+document.addEventListener('keyup', e => { if (e.code === 'Space' || e.key === ' ') { spaceDown = false; if (run) e.preventDefault(); } });
+window.addEventListener('blur', () => { spaceDown = false; });
+document.addEventListener('fullscreenchange', () => { if (run && run.wentFullscreen && !document.fullscreenElement) finish(true, 'stopped'); });
+document.addEventListener('visibilitychange', () => { if (run && document.hidden) finish(true, 'hidden'); });
+window.addEventListener('pagehide', stopCamera);
+
+$('jsonBtn').addEventListener('click', exportJSON);
+$('csvSumBtn').addEventListener('click', exportSummaryCSV);
+$('csvTrialBtn').addEventListener('click', exportTrialsCSV);
+$('againBtn').addEventListener('click', () => { show('setup'); if (cam.wanted) startCamera(); });
+el.chart.addEventListener('pointermove', chartHover);
+el.chart.addEventListener('pointerleave', chartLeave);
+let rz = null;
+window.addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { if (lastReport && !el.results.classList.contains('hidden')) drawChart(lastReport); }, 150); });
+})();
+</script>
+</body>
+</html>
