@@ -112,6 +112,8 @@ td.overall, th.overall { font-weight: 700; border-left: 1px solid var(--border);
 .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--text-2); margin-top: 6px; }
 .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
 .legend i.ln { height: 2px; width: 16px; border-radius: 0; vertical-align: 3px; }
+.verdict { font-weight: 600; }
+#cmpFocus { margin-bottom: 12px; }
 .note { background: var(--surface-2); border-radius: 8px; padding: 9px 12px; margin-bottom: 12px; }
 </style>
 </head>
@@ -154,6 +156,16 @@ td.overall, th.overall { font-weight: 700; border-left: 1px solid var(--border);
       </div>
     </div>
   </div>
+
+  <div class="card hidden" id="histCard">
+    <h2>Your sessions</h2>
+    <p class="small">Completed sessions are kept in this browser only, so each new run can be compared with your earlier ones.</p>
+    <div class="tablewrap"><table id="histTable"></table></div>
+    <div class="row" style="margin-top:12px">
+      <button id="histExportBtn">Export history as JSON</button>
+      <button id="histClearBtn">Clear history</button>
+    </div>
+  </div>
 </main>
 
 <!-- Analysis-only video: kept rendered (but invisible) so frames keep decoding while the setup screen is hidden. -->
@@ -175,6 +187,13 @@ td.overall, th.overall { font-weight: 700; border-left: 1px solid var(--border);
   <div class="card">
     <h2>Quartile breakdown</h2>
     <div class="tablewrap"><table id="resTable"></table></div>
+  </div>
+
+  <div class="card">
+    <h2>Compared with your earlier sessions</h2>
+    <p id="cmpFocus" class="note"></p>
+    <div class="tablewrap"><table id="cmpTable"></table></div>
+    <p class="small" id="cmpFoot" style="margin-top:10px"></p>
   </div>
 
   <div class="card">
@@ -400,8 +419,11 @@ function finish(early, reason) {
   stopCamera();
   lastReport = analyze(run);
   run = null;
+  const prior = loadHistory().filter(r => r.mode === lastReport.mode);
+  const saved = !lastReport.stoppedEarly && lastReport.completedTrials > 0 && saveSession(lastReport);
   show('results');
   renderResults(lastReport);
+  renderComparison(lastReport, prior, saved);
 }
 
 /* ---------------- Analysis ---------------- */
@@ -606,6 +628,81 @@ function chartHover(ev) {
 }
 function chartLeave() { el.tip.classList.add('hidden'); const c = $('cross'); if (c) c.setAttribute('visibility', 'hidden'); }
 
+/* ---------------- Session history + comparison (improvement loop) ---------------- */
+const HIST_KEY = 'attentionTest.sessions.v1';
+function loadHistory() {
+  try { const a = JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; }
+}
+function saveSession(rep) {
+  const rec = { startedAt: rep.startedAt, mode: rep.mode, trials: rep.completedTrials, motionTracked: rep.motion.tracked, overall: rep.overall, quartiles: rep.quartiles };
+  try { const a = loadHistory(); a.push(rec); localStorage.setItem(HIST_KEY, JSON.stringify(a.slice(-200))); return true; } catch (e) { return false; }
+}
+// tol = smallest difference treated as a real change; lower is better for every metric (mean RT is reported as faster/slower).
+const CMP = [
+  { key: 'omissionPct', label: 'Omission errors', unit: '%', dp: 1, tol: () => 2, focus: 'You missed more targets than usual. Next run, keep your eyes on the centre through the blank gaps.' },
+  { key: 'meanRtMs', label: 'Mean reaction time', unit: ' ms', dp: 0, tol: () => 15, speed: true },
+  { key: 'rtSdMs', label: 'Reaction time variability (SD)', unit: ' ms', dp: 0, tol: () => 10, focus: 'Your response timing was less steady than usual. Next run, aim for an even rhythm rather than speed.' },
+  { key: 'commissionPct', label: 'Commission errors', unit: '%', dp: 1, tol: () => 1, focus: 'You made more false presses than usual. Next run, wait until you are sure both shape and color match.' },
+  { key: 'anticipatory', label: 'Anticipatory responses', unit: '', dp: 1, tol: () => 0.5, focus: 'You had more too-early presses than usual. Next run, respond only after you have seen the shape.' },
+  { key: 'activeTimePct', label: 'Active time', unit: '%', dp: 1, tol: () => 2, focus: 'You moved for more of the session than usual. Next run, settle your posture before starting.' },
+  { key: 'motionIndex', label: 'Motion index', unit: '', dp: 1, tol: avg => Math.max(1, avg * 0.1), focus: 'Your overall movement was higher than usual. Next run, check your seat and camera are stable before starting.' }
+];
+const num = (v, m) => v == null ? '—' : v.toFixed(m.dp) + m.unit;
+function renderComparison(rep, prior, saved) {
+  const modeName = rep.mode === 'demo' ? 'demo' : 'full-test';
+  const focusEl = $('cmpFocus'), table = $('cmpTable'), foot = $('cmpFoot');
+  foot.textContent = !rep.completedTrials ? '' : rep.stoppedEarly ? 'This run was stopped early, so it was not added to your history.'
+    : saved ? 'This session was saved to your history in this browser.' : 'This session could not be saved (browser storage is unavailable).';
+  if (!rep.completedTrials) { focusEl.textContent = 'Nothing to compare.'; table.innerHTML = ''; return; }
+  if (!prior.length) {
+    focusEl.textContent = rep.stoppedEarly ? 'No earlier ' + modeName + ' sessions to compare with yet.'
+      : 'This is your first ' + modeName + ' session, so it becomes your baseline. Repeat it in the same setup to see what changes.';
+    table.innerHTML = ''; return;
+  }
+  const prev = prior[prior.length - 1].overall;
+  let h = '<thead><tr><th>Metric</th><th>This session</th><th>Previous</th><th>Your average (' + prior.length + ')</th><th class="overall">Change vs average</th></tr></thead><tbody>';
+  let worst = null, best = null;
+  for (const m of CMP) {
+    const cur = rep.overall[m.key], vals = prior.map(r => r.overall[m.key]).filter(v => v != null);
+    const avg = vals.length ? vals.reduce((a, v) => a + v, 0) / vals.length : null;
+    let verdict = '—';
+    if (cur != null && avg != null) {
+      const diff = cur - avg, tol = m.tol(avg), sign = diff > 0 ? '+' : '−';
+      if (Math.abs(diff) <= tol) verdict = 'about the same';
+      else {
+        const word = m.speed ? (diff < 0 ? 'faster' : 'slower') : (diff < 0 ? 'better' : 'worse');
+        verdict = (diff < 0 ? '▼ ' : '▲ ') + sign + Math.abs(diff).toFixed(m.dp) + (m.unit === '%' ? ' pts' : m.unit) + ' · ' + word;
+        if (!m.speed) {
+          const size = Math.abs(diff) / tol;
+          if (diff > 0 && (!worst || size > worst.size)) worst = { m, size };
+          if (diff < 0 && (!best || size > best.size)) best = { m, size };
+        }
+      }
+    }
+    h += '<tr><td>' + m.label + '</td><td>' + num(cur, m) + '</td><td>' + num(prev[m.key], m) + '</td><td>' + num(avg, m) + '</td><td class="overall verdict">' + verdict + '</td></tr>';
+  }
+  table.innerHTML = h + '</tbody>';
+  let msg = worst ? '<b>Focus for next session:</b> ' + worst.m.focus
+    : best ? '<b>Nothing got worse</b> against your average. Biggest gain: ' + best.m.label.toLowerCase() + '.'
+    : '<b>Steady:</b> this session is in line with your average.';
+  const q = rep.quartiles, half = (a, b, k) => (q[a][k] == null || q[b][k] == null) ? null : (q[a][k] + q[b][k]) / 2;
+  const o1 = half(0, 1, 'omissionPct'), o2 = half(2, 3, 'omissionPct'), a1 = half(0, 1, 'activeTimePct'), a2 = half(2, 3, 'activeTimePct');
+  if (o1 != null && o2 != null && o2 - o1 > 10) msg += ' Within this session, missed targets rose in the second half (' + o1.toFixed(0) + '% → ' + o2.toFixed(0) + '%).';
+  else if (a1 != null && a2 != null && a2 - a1 > 5) msg += ' Within this session, movement rose in the second half (' + a1.toFixed(0) + '% → ' + a2.toFixed(0) + '% active).';
+  focusEl.innerHTML = msg;
+}
+function renderHistory() {
+  const a = loadHistory();
+  $('histCard').classList.toggle('hidden', !a.length);
+  if (!a.length) return;
+  const cols = ['omissionPct', 'commissionPct', 'meanRtMs', 'rtSdMs', 'activeTimePct'].map(k => CMP.find(m => m.key === k));
+  let h = '<thead><tr><th>Date</th><th>Type</th>' + cols.map(m => '<th>' + m.label + '</th>').join('') + '</tr></thead><tbody>';
+  for (const r of a.slice(-20).reverse()) {
+    h += '<tr><td>' + new Date(r.startedAt).toLocaleString() + '</td><td>' + (r.mode === 'demo' ? 'Demo' : 'Full') + '</td>' + cols.map(m => '<td>' + num(r.overall[m.key], m) + '</td>').join('') + '</tr>';
+  }
+  $('histTable').innerHTML = h + '</tbody>';
+}
+
 /* ---------------- Export ---------------- */
 function download(name, text, type) {
   const url = URL.createObjectURL(new Blob([text], { type }));
@@ -680,7 +777,10 @@ window.addEventListener('pagehide', stopCamera);
 $('jsonBtn').addEventListener('click', exportJSON);
 $('csvSumBtn').addEventListener('click', exportSummaryCSV);
 $('csvTrialBtn').addEventListener('click', exportTrialsCSV);
-$('againBtn').addEventListener('click', () => { show('setup'); if (cam.wanted) startCamera(); });
+$('againBtn').addEventListener('click', () => { renderHistory(); show('setup'); if (cam.wanted) startCamera(); });
+$('histExportBtn').addEventListener('click', () => download('attention-test-history.json', JSON.stringify(loadHistory(), null, 2), 'application/json'));
+$('histClearBtn').addEventListener('click', () => { if (confirm('Delete all saved sessions from this browser? This cannot be undone.')) { try { localStorage.removeItem(HIST_KEY); } catch (e) {} renderHistory(); } });
+renderHistory();
 el.chart.addEventListener('pointermove', chartHover);
 el.chart.addEventListener('pointerleave', chartLeave);
 let rz = null;
