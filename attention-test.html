@@ -160,6 +160,7 @@ kbd { font: inherit; font-size: 12px; border: 1px solid var(--border); border-bo
       </ul>
       <div class="row">
         <button id="demoBtn">Run 30-Second Demo</button>
+        <button id="fastBtn">Run Fast 5-Minute Test</button>
         <button id="fullBtn" class="primary">Run Full 20-Minute Test</button>
       </div>
     </div>
@@ -262,7 +263,7 @@ kbd { font: inherit; font-size: 12px; border: 1px solid var(--border); border-bo
 
 const CFG = {
   stimMs: 200, trialMs: 2000, anticipMs: 150,
-  fullTrials: 600, demoTrials: 15,
+  fullTrials: 600, fastTrials: 150, demoTrials: 15,
   sampleMs: 80,            // ~12.5 FPS motion sampling
   calibMs: 5000, demoCalibMs: 3000, noCamCountdownMs: 3000, leadInMs: 1000,
   grabW: 64, grabH: 48,    // downscaled analysis frame
@@ -274,6 +275,11 @@ const STIMS = [
   { shape: 'circle', color: 'blue' }, { shape: 'square', color: 'blue' }
 ]; // index bit0 = shape, bit1 = color
 
+const MODES = {
+  demo: { trials: CFG.demoTrials, title: '30-second demo', name: 'demo', short: 'Demo' },
+  fast: { trials: CFG.fastTrials, title: 'Fast 5-minute test', name: 'fast-test', short: 'Fast' },
+  full: { trials: CFG.fullTrials, title: 'Full 20-minute test', name: 'full-test', short: 'Full' }
+};
 const $ = id => document.getElementById(id);
 const el = {
   setup: $('setup'), stage: $('stage'), results: $('results'),
@@ -391,7 +397,7 @@ function show(which) {
 }
 
 function startRun(mode) {
-  const n = mode === 'demo' ? CFG.demoTrials : CFG.fullTrials;
+  const n = MODES[mode].trials;
   const hasCam = !!cam.stream;
   run = {
     mode, planned: n, trials: buildSequence(n), startedAt: new Date().toISOString(),
@@ -598,7 +604,7 @@ const ROWS = [
 ];
 
 function renderResults(rep) {
-  $('resMeta').textContent = (rep.mode === 'demo' ? '30-second demo' : 'Full 20-minute test') + ' · ' +
+  $('resMeta').textContent = MODES[rep.mode].title + ' · ' +
     new Date(rep.startedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) + ' · ' + rep.completedTrials + ' of ' + rep.plannedTrials + ' trials (' + clock(rep.durationMs) + ')';
   const notes = [];
   if (rep.stoppedEarly) notes.push(rep.stopReason === 'hidden' ? 'The test ended early because the tab was hidden. Quartiles split the completed portion into four equal parts.'
@@ -606,6 +612,7 @@ function renderResults(rep) {
   if (!rep.completedTrials) notes.push('No trials were completed, so there is nothing to score.');
   if (!rep.motion.tracked) notes.push('Camera was off, so activity metrics were not recorded.');
   else if (rep.motion.calibration.fallback) notes.push('Calibration got too few camera frames; a default movement threshold was used.');
+  if (rep.mode === 'fast') notes.push('The fast test has about 37 targets and no time for fatigue to build, so it is less sensitive than the full 20 minutes. It is compared only with your other fast tests.');
   if (rep.mode === 'demo') notes.push('The demo has only a handful of targets — use it to check the mechanics, not as a measurement.');
   $('resNotes').innerHTML = notes.map(n => '<div class="note small">' + n + '</div>').join('');
 
@@ -729,7 +736,7 @@ const CMP = [
 ];
 const num = (v, m) => v == null ? '—' : v.toFixed(m.unit === '' && Number.isInteger(v) ? 0 : m.dp) + m.unit;
 function renderComparison(rep, prior, saved) {
-  const modeName = rep.mode === 'demo' ? 'demo' : 'full-test';
+  const modeName = MODES[rep.mode].name;
   const focusEl = $('cmpFocus'), table = $('cmpTable'), foot = $('cmpFoot');
   foot.textContent = !rep.completedTrials ? '' : rep.stoppedEarly ? 'This run was stopped early, so it was not added to your history.'
     : !rep.timing.valid ? 'This run failed the timing check, so it was not added to your history.'
@@ -779,7 +786,7 @@ function renderHistory() {
   const cols = ['omissionPct', 'commissionPct', 'meanRtMs', 'rtSdMs', 'activeTimePct'].map(k => CMP.find(m => m.key === k));
   let h = '<thead><tr><th>Date</th><th>Type</th>' + cols.map(m => '<th>' + m.label + '</th>').join('') + '</tr></thead><tbody>';
   for (const r of a.slice(-20).reverse()) {
-    h += '<tr><td style="white-space:nowrap">' + new Date(r.startedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) + '</td><td>' + (r.mode === 'demo' ? 'Demo' : 'Full') + '</td>' + cols.map(m => '<td>' + num(r.overall[m.key], m) + '</td>').join('') + '</tr>';
+    h += '<tr><td style="white-space:nowrap">' + new Date(r.startedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) + '</td><td>' + (MODES[r.mode] || MODES.full).short + '</td>' + cols.map(m => '<td>' + num(r.overall[m.key], m) + '</td>').join('') + '</tr>';
   }
   $('histTable').innerHTML = h + '</tbody>';
 }
@@ -837,6 +844,7 @@ function exportTrialsCSV() {
 /* ---------------- Events ---------------- */
 el.camBtn.addEventListener('click', () => { if (cam.stream) { cam.wanted = false; stopCamera(); el.camStatus.textContent = 'Camera off. The test will run without motion tracking.'; } else startCamera(); });
 $('demoBtn').addEventListener('click', () => startRun('demo'));
+$('fastBtn').addEventListener('click', () => startRun('fast'));
 $('fullBtn').addEventListener('click', () => startRun('full'));
 $('stopBtn').addEventListener('pointerdown', e => e.stopPropagation());
 $('stopBtn').addEventListener('click', () => finish(true, 'stopped'));
