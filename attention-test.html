@@ -219,6 +219,27 @@ kbd { font: inherit; font-size: 12px; border: 1px solid var(--border); border-bo
   </div>
 
   <div class="card">
+    <h2>Rough comparison with published averages</h2>
+    <label class="small" style="display:flex;gap:8px;align-items:center;margin-bottom:10px">Reference group
+      <select id="refSel" style="font:inherit;padding:3px 6px">
+        <option value="">None</option><option value="male">Males aged 12–60</option><option value="female">Females aged 12–60</option>
+      </select>
+    </label>
+    <p id="refMsg" class="note"></p>
+    <div class="tablewrap"><table id="refTable"></table></div>
+    <div id="refFoot" class="small hidden" style="margin-top:10px">
+      <p><b>This is an estimate, not a Q-score.</b> A clinical report compares you with people of your own age using unpublished tables. These are the only published averages, and they cover everyone from 12 to 60, so they include teenagers and people in their twenties, who are faster.</p>
+      <ul class="tight">
+        <li>"SDs from average" is how far you are from the group average, in units of that group's spread. Within about 1 either way is the typical range. Error rates are skewed, so these do not convert to percentiles.</li>
+        <li>The two reference groups disagree with each other on several measures, which shows how uncertain the averages themselves are.</li>
+        <li>The reference groups had a practice round, and the clinical scoring leaves out the first five minutes. A first attempt or a 5-minute run will look worse than it should.</li>
+        <li>Head distance is scaled to a 20-minute equivalent and comes from a webcam, not an infrared marker; area and micro-movements are left out because they are defined differently.</li>
+      </ul>
+      <p>Source: Normative Data for Objective ADHD Smartphone Application in a General Population (2025), table of basic parameters for QbTest (clinical) and QbMobile (phone).</p>
+    </div>
+  </div>
+
+  <div class="card">
     <h2>Movement and response events over time</h2>
     <div id="chartWrap"><svg id="chart" role="img" aria-label="Timeline of movement activity and response events across the four quartiles"></svg><div id="tip" class="hidden"></div></div>
     <div class="legend">
@@ -590,6 +611,7 @@ function finish(early, reason) {
   show('results');
   renderResults(lastReport);
   renderComparison(lastReport, prior, saved);
+  renderReference(lastReport);
 }
 
 /* ---------------- Analysis ---------------- */
@@ -952,6 +974,57 @@ function renderHistory() {
   $('histTable').innerHTML = h + '</tbody>';
 }
 
+/* ---------------- Rough comparison with published group averages ---------------- */
+// Mean and SD of raw scores, ages 12–60, from the 2025 QbMobile normative study (PMC12046230):
+// "clinic" = QbTest database (360 males, 371 females); "phone" = QbMobile sample (972 males, 1243 females).
+const REF = {
+  male: {
+    clinic: { omissionPct: [6.0, 5.8], commissionPct: [1.5, 1.5], errorRatePct: [2.6, 2.2], meanRtMs: [539.6, 97.4], rtSdMs: [148.9, 46.8], headActivePct: [6.6, 7.8], headDistance20: [3.7, 2.3] },
+    phone:  { omissionPct: [10.6, 12.2], commissionPct: [2.9, 4.8], errorRatePct: [5.3, 5.1], meanRtMs: [535.9, 115.8], rtSdMs: [126.8, 46.2], headActivePct: [16.6, 16.4], headDistance20: [4.9, 3.7] }
+  },
+  female: {
+    clinic: { omissionPct: [5.9, 6.2], commissionPct: [1.3, 1.4], errorRatePct: [2.5, 2.2], meanRtMs: [550.2, 93.4], rtSdMs: [148.2, 44.1], headActivePct: [5.5, 6.3], headDistance20: [3.3, 1.5] },
+    phone:  { omissionPct: [10.3, 11.4], commissionPct: [2.6, 4.2], errorRatePct: [5.1, 4.6], meanRtMs: [557.3, 115.7], rtSdMs: [128.3, 42.4], headActivePct: [13.0, 14.0], headDistance20: [4.0, 2.9] }
+  }
+};
+const REF_ROWS = [
+  { key: 'omissionPct', label: 'Missed targets', unit: '%', dp: 1 },
+  { key: 'commissionPct', label: 'False presses', unit: '%', dp: 1 },
+  { key: 'errorRatePct', label: 'Overall error rate', unit: '%', dp: 1 },
+  { key: 'meanRtMs', label: 'Mean reaction time', unit: ' ms', dp: 0 },
+  { key: 'rtSdMs', label: 'Reaction time variability', unit: ' ms', dp: 0 },
+  { key: 'headActivePct', label: 'Head time active', unit: '%', dp: 1 },
+  { key: 'headDistance20', label: 'Head distance (per 20 minutes)', unit: ' m', dp: 1 }
+];
+const REF_KEY = 'attentionTest.refGroup';
+function referenceComparison(rep, group) {
+  if (!REF[group] || rep.mode === 'demo' || !rep.completedTrials) return null;
+  const o = rep.overall, mine = Object.assign({}, o, { headDistance20: o.headDistanceM == null ? null : o.headDistanceM * 1200000 / rep.durationMs });
+  const z = (v, r) => v == null ? null : (v - r[0]) / r[1];
+  return { group, rows: REF_ROWS.map(m => ({ key: m.key, label: m.label, you: mine[m.key],
+    clinicMean: REF[group].clinic[m.key][0], clinicSd: REF[group].clinic[m.key][1], clinicSds: z(mine[m.key], REF[group].clinic[m.key]),
+    phoneMean: REF[group].phone[m.key][0], phoneSd: REF[group].phone[m.key][1], phoneSds: z(mine[m.key], REF[group].phone[m.key]) })) };
+}
+function renderReference(rep) {
+  const group = $('refSel').value, msg = $('refMsg'), table = $('refTable'), foot = $('refFoot');
+  const cmp = referenceComparison(rep, group);
+  foot.classList.toggle('hidden', !cmp); table.innerHTML = '';
+  if (!cmp) {
+    msg.classList.remove('hidden');
+    msg.textContent = !rep.completedTrials ? 'Nothing to compare.' : rep.mode === 'demo' ? 'The 30-second demo is too short to compare with anything. Run the fast or full test.'
+      : 'Choose a reference group to see how this session sits against published group averages.';
+    return;
+  }
+  msg.classList.add('hidden');
+  const f = (v, m) => v == null ? '—' : v.toFixed(m.dp) + m.unit;
+  const sds = v => { if (v == null) return '—'; const a = Math.abs(v), w = a <= 1 ? 'typical range' : (a <= 2 ? '' : 'well ') + (v > 0 ? 'above average' : 'below average'); return (v >= 0 ? '+' : '−') + a.toFixed(1) + ' · ' + w; };
+  let h = '<thead><tr><th>Measure</th><th>You</th><th>Clinic group<br>average (spread)</th><th>SDs from average</th><th>Phone group<br>average (spread)</th><th class="overall">SDs from average</th></tr></thead><tbody>';
+  cmp.rows.forEach((r, i) => { const m = REF_ROWS[i];
+    h += '<tr><td>' + r.label + '</td><td><b>' + f(r.you, m) + '</b></td><td>' + f(r.clinicMean, m) + ' (' + r.clinicSd.toFixed(m.dp) + ')</td><td class="verdict">' + sds(r.clinicSds) +
+         '</td><td>' + f(r.phoneMean, m) + ' (' + r.phoneSd.toFixed(m.dp) + ')</td><td class="overall verdict">' + sds(r.phoneSds) + '</td></tr>'; });
+  table.innerHTML = h + '</tbody>';
+}
+
 /* ---------------- Export ---------------- */
 function download(name, text, type) {
   const url = URL.createObjectURL(new Blob([text], { type }));
@@ -979,6 +1052,7 @@ function exportJSON() {
     config: { stimulusMs: CFG.stimMs, trialMs: CFG.trialMs, anticipatoryBelowMs: CFG.anticipMs, motionSampleMs: CFG.sampleMs },
     timing: rep.timing,
     environment: { userAgent: navigator.userAgent, screen: screen.width + 'x' + screen.height, devicePixelRatio: window.devicePixelRatio, camera: rep.camInfo },
+    referenceComparison: (c => c && Object.assign({ note: 'Rough estimate against published all-ages (12-60) group averages; not a Q-score.' }, c))(referenceComparison(rep, $('refSel').value)),
     summary: { overall: rep.overall, Q1: rep.quartiles[0], Q2: rep.quartiles[1], Q3: rep.quartiles[2], Q4: rep.quartiles[3] },
     trials: rep.trials.map(t => ({ trial: t.i + 1, timeMs: t.timeMs, quartile: t.quartile, shape: t.shape, color: t.color, type: t.type, isTarget: t.isTarget,
                                    responded: t.rt != null, rtMs: r1(t.rt), outcome: t.outcome, extraPresses: t.extraPresses, stimulusShownMs: r1(t.shownMs) })),
@@ -1009,6 +1083,8 @@ el.camBtn.addEventListener('click', () => { if (cam.stream) { cam.wanted = false
 $('headChk').addEventListener('change', () => { if (!$('headChk').checked) { stopHead(); headMsg(''); } else if (cam.stream) { if (head.state === 'ready') scheduleHead(0); else loadHead(); } });
 try { const v = localStorage.getItem(PD_KEY); if (v) $('pdInput').value = v; } catch (e) {}
 $('pdInput').addEventListener('change', () => { try { localStorage.setItem(PD_KEY, String(pdMm())); } catch (e) {} });
+try { const g = localStorage.getItem(REF_KEY); if (g && REF[g]) $('refSel').value = g; } catch (e) {}
+$('refSel').addEventListener('change', () => { try { localStorage.setItem(REF_KEY, $('refSel').value); } catch (e) {} if (lastReport) renderReference(lastReport); });
 $('demoBtn').addEventListener('click', () => startRun('demo'));
 $('fastBtn').addEventListener('click', () => startRun('fast'));
 $('fullBtn').addEventListener('click', () => startRun('full'));
