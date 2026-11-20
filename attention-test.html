@@ -57,6 +57,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .cam { position: relative; width: 100%; aspect-ratio: 4 / 3; background: #000; border-radius: 8px; overflow: hidden; }
 .cam video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); display: block; }
 .cam .roi { position: absolute; left: 20%; top: 5%; width: 60%; height: 90%; border: 2px dashed rgba(255,255,255,.75); border-radius: 6px; pointer-events: none; }
+.cam .hdot { position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; border: 2px solid #fff; background: #3987e5; pointer-events: none; }
 .cam .off { position: absolute; inset: 0; display: grid; place-items: center; color: #bbb; text-align: center; padding: 12px; font-size: 13px; }
 .meter { height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; margin: 10px 0 4px; }
 .meter > div { height: 100%; width: 0; background: var(--series); border-radius: 4px; transition: width .08s linear; }
@@ -138,12 +139,18 @@ kbd { font: inherit; font-size: 12px; border: 1px solid var(--border); border-bo
       <div class="cam">
         <video id="video" autoplay playsinline muted></video>
         <div class="roi hidden" id="roi"></div>
+        <div class="hdot hidden" id="headDot"></div>
         <div class="off" id="camOff">Camera is off</div>
       </div>
       <div class="meter" title="Live movement"><div id="meterBar"></div></div>
       <p class="small" id="camStatus">Enable the camera to track movement. Without it the test still runs, but activity metrics are skipped.</p>
       <button id="camBtn">Enable camera</button>
-      <p class="small" style="margin-top:10px">Video is analysed frame-by-frame in this tab only. Nothing is recorded, saved, or sent anywhere.</p>
+      <div style="margin-top:12px">
+        <label class="small" style="display:flex;gap:8px;align-items:flex-start"><input type="checkbox" id="headChk" checked style="margin-top:3px"> <span>Measure head movement in centimetres</span></label>
+        <label class="small" style="display:flex;gap:8px;align-items:center;margin-top:6px">Pupil distance <input type="number" id="pdInput" min="50" max="75" step="0.5" value="63" style="width:64px;font:inherit;padding:2px 4px"> mm</label>
+        <p class="small" id="headStatus" style="margin:6px 0 0"></p>
+      </div>
+      <p class="small" style="margin-top:10px">Video is analysed frame-by-frame in this tab only. Nothing is recorded, saved, or sent anywhere. Head measurement downloads a face-tracking program and model (about 15 MB) from the internet when you switch the camera on; your video still never leaves this tab.</p>
     </div>
 
     <div class="card">
@@ -215,7 +222,7 @@ kbd { font: inherit; font-size: 12px; border: 1px solid var(--border); border-bo
     <h2>Movement and response events over time</h2>
     <div id="chartWrap"><svg id="chart" role="img" aria-label="Timeline of movement activity and response events across the four quartiles"></svg><div id="tip" class="hidden"></div></div>
     <div class="legend">
-      <span><i class="ln" style="background:var(--series)"></i>Activity score (1.0 = movement threshold)</span>
+      <span><i class="ln" style="background:var(--series)"></i><span id="legendSeries">Activity score (1.0 = movement threshold)</span></span>
       <span><i style="background:var(--hit)"></i>Hit</span>
       <span><i style="background:var(--omission)"></i>Omission</span>
       <span><i style="background:var(--commission)"></i>Commission</span>
@@ -239,7 +246,7 @@ kbd { font: inherit; font-size: 12px; border: 1px solid var(--border); border-bo
     <ul class="tight">
       <li><b>Same task design</b> as publicly described for the adult version: remember-the-previous-one matching on four shape/color stimuli, 200 ms on screen, one every 2 seconds, 600 trials over 20 minutes, 25% targets.</li>
       <li><b>No norm group.</b> A clinical report scores you against people of your age and sex. This app has no such data, so it can only compare you with your own earlier sessions. A number here is not high or low in any clinical sense.</li>
-      <li><b>Different movement measurement.</b> The clinical test follows a reflective marker on your head with an infrared camera and reports distance and area in real units. This app measures how much the webcam image changes, which is a consistent signal for you in a fixed setup but is not head position.</li>
+      <li><b>Different movement measurement.</b> The clinical test follows a reflective marker on your head with an infrared camera. This app estimates head position from the webcam picture with a face-tracking model and converts it to centimetres from the distance between your pupils. It measures the same kind of quantity (distance, area, time active, micro-movements), but with a slower, coarser camera and an assumed pupil distance, so treat the centimetres as approximate.</li>
       <li><b>Consumer hardware.</b> Your keyboard and display add a roughly constant delay to every reaction time. Differences between your own sessions on the same computer are meaningful; the absolute milliseconds are not comparable with clinical equipment.</li>
     </ul>
   </div>
@@ -251,6 +258,7 @@ kbd { font: inherit; font-size: 12px; border: 1px solid var(--border); border-bo
       <li><b>Anticipatory</b>: any press faster than 150 ms after stimulus onset. These are counted on their own and excluded from hits, commissions and reaction-time statistics.</li>
       <li><b>Mean RT / RT variability</b>: mean and sample standard deviation of reaction times for correct hits. <b>Sensitivity d′</b>: how well you separate targets from non-targets, from hit rate and false-press rate (log-linear corrected).</li>
       <li><b>Timing check</b>: the run fails if any stimulus was skipped, appeared more than 40 ms late, or stayed on screen outside 170–240 ms. Failed runs are not added to your history.</li>
+      <li><b>Head movement</b>: about 15 times a second the app finds the point midway between your eyes. Pixels become millimetres using your pupil distance (63 mm unless you enter your own). <b>Distance</b>: total path travelled, counted in steps of at least 1 mm so camera jitter is not added up. <b>Micro-movements</b>: the number of those steps. <b>Time active</b>: share of time the head moved faster than 1 cm per second. <b>Area</b>: the region the head point covered, in 5 mm squares. Only movement across the picture is measured, not towards or away from the camera.</li>
       <li><b>Activity score</b>: frame-to-frame luminance change inside the dashed box, minus your calibration baseline, scaled so 1.0 is the movement threshold. <b>Motion index</b>: area under that score (score × seconds). <b>Active time</b>: share of samples at or above the threshold. <b>Bursts</b>: separate runs of above-threshold movement.</li>
       <li>Lighting changes, camera auto-exposure and people moving behind you all register as movement. Compare sessions only when recorded in the same setup.</li>
     </ul>
@@ -296,6 +304,108 @@ const gctx = grab.getContext('2d', { willReadFrequently: true });
 const RX = Math.round(CFG.roi.x * CFG.grabW), RY = Math.round(CFG.roi.y * CFG.grabH);
 const RW = Math.round(CFG.roi.w * CFG.grabW), RH = Math.round(CFG.roi.h * CFG.grabH);
 
+/* ---------------- Head tracking in real units (face landmarks) ---------------- */
+const HEAD = {
+  lib: 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14',
+  model: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+  sampleMs: 66,        // ~15 samples per second
+  guardMs: 110,        // never run the model this close to a stimulus appearing or disappearing
+  activeMmPerS: 10,    // "active" = faster than 1 cm/s
+  cellMm: 5            // area grid
+};
+const head = { lm: null, vision: null, fileset: null, state: 'off', timer: null, lastVT: -1, sp: null, cornerPx: null, costMs: 0, costMax: 0, n: 0, delegate: null, live: null };
+const PD_KEY = 'attentionTest.pdMm';
+function pdMm() { const v = parseFloat($('pdInput').value); return v >= 50 && v <= 75 ? v : 63; }
+function headMsg(t) { $('headStatus').textContent = t; }
+async function loadHead() {
+  if (head.state === 'loading' || head.state === 'ready') return;
+  head.state = 'loading'; headMsg('Loading head tracking…');
+  try {
+    if (!head.vision) head.vision = await import(HEAD.lib + '/vision_bundle.mjs');
+    if (!head.fileset) head.fileset = await head.vision.FilesetResolver.forVisionTasks(HEAD.lib + '/wasm');
+    await makeLandmarker('GPU').catch(() => makeLandmarker('CPU'));
+    head.state = 'ready'; headMsg('Head tracking ready. Looking for your face…');
+    scheduleHead(0);
+  } catch (e) {
+    head.state = 'failed';
+    headMsg('Head tracking could not load (no internet connection?). The test will use the image-change measure only.');
+  }
+}
+async function makeLandmarker(delegate) {
+  head.lm = await head.vision.FaceLandmarker.createFromOptions(head.fileset, { baseOptions: { modelAssetPath: HEAD.model, delegate }, runningMode: 'VIDEO', numFaces: 1 });
+  head.delegate = delegate;
+}
+function scheduleHead(ms) { clearTimeout(head.timer); head.timer = setTimeout(headTick, ms); }
+function stopHead() { clearTimeout(head.timer); head.timer = null; head.sp = null; head.cornerPx = null; $('headDot').classList.add('hidden'); }
+function headWanted() { return $('headChk').checked && head.state === 'ready' && !!cam.stream; }
+function headTick() {
+  if (!headWanted()) return;
+  const now = performance.now();
+  if (run && run.phase === 'test') {
+    // keep the model's work away from the moments a stimulus is drawn or removed
+    const m = (((now - run.t0) % CFG.trialMs) + CFG.trialMs) % CFG.trialMs;
+    const gap = Math.min(CFG.trialMs - m, m < CFG.stimMs ? CFG.stimMs - m : Infinity);
+    // the guard grows with how long the model takes on this machine
+    if (gap < Math.max(HEAD.guardMs, head.costMax * 2 + 40)) { scheduleHead(gap + 8); return; }
+  }
+  if (el.proc.readyState >= 2 && el.proc.currentTime !== head.lastVT) {
+    head.lastVT = el.proc.currentTime;
+    let res = null;
+    try { res = head.lm.detectForVideo(el.proc, now); }
+    catch (e) {
+      if (head.delegate === 'GPU') { makeLandmarker('CPU').then(() => scheduleHead(HEAD.sampleMs)).catch(() => { head.state = 'failed'; headMsg('Head tracking stopped working. The test will use the image-change measure only.'); }); return; }
+      head.state = 'failed'; headMsg('Head tracking stopped working. The test will use the image-change measure only.'); return;
+    }
+    const cost = performance.now() - now;
+    head.costMs = head.costMs ? head.costMs * 0.9 + cost * 0.1 : cost;
+    head.costMax = Math.max(cost, head.costMax * 0.98);
+    if (++head.n === 1) head.costMs = head.costMax = 0;      // first call includes one-off start-up work
+    if (head.n === 2 && cost > 50) {
+      // graphics-card mode is slow here (no usable GPU): switch to processor mode, or give up if that is slow too
+      if (head.delegate === 'GPU') { head.n = 0; head.costMs = head.costMax = 0; makeLandmarker('CPU').then(() => scheduleHead(HEAD.sampleMs)).catch(() => { head.state = 'failed'; }); return; }
+      if (cost > 120) { head.state = 'failed'; stopHead(); headMsg('This computer is too slow for head tracking. The test will use the image-change measure only.'); return; }
+    }
+    headSample(res && res.faceLandmarks && res.faceLandmarks[0], now);
+  }
+  // on slow machines sample less often so the model never uses more than about a quarter of the time
+  scheduleHead(Math.max(HEAD.sampleMs, head.costMs * 4));
+}
+function headSample(lm, now) {
+  const inTest = run && run.phase === 'test', inCalib = run && run.phase === 'calib';
+  if (!lm || lm.length < 478) {
+    head.sp = null;
+    if (inTest && run.headCal) { const t = now - run.t0; if (t >= 0) { run.ht.push(t); run.hx.push(run.hpos.x); run.hy.push(run.hpos.y); run.hv.push(0); } }
+    if (!run) { $('headDot').classList.add('hidden'); headMsg('Head tracking ready, but no face found. Face the camera with your eyes visible.'); }
+    return;
+  }
+  const vw = el.proc.videoWidth, vh = el.proc.videoHeight, P = i => ({ x: lm[i].x * vw, y: lm[i].y * vh });
+  const d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  // eye corners are rigid on the skull; iris centres give the pupil distance but move with gaze
+  const c = [P(33), P(133), P(362), P(263)], mid = { x: (c[0].x + c[1].x + c[2].x + c[3].x) / 4, y: (c[0].y + c[1].y + c[2].y + c[3].y) / 4 };
+  const cornerPx = d(c[0], c[3]), ipdPx = d(P(468), P(473));
+  const prev = head.sp;
+  head.sp = prev ? { x: prev.x + 0.5 * (mid.x - prev.x), y: prev.y + 0.5 * (mid.y - prev.y) } : mid;
+  head.cornerPx = head.cornerPx ? head.cornerPx + 0.1 * (cornerPx - head.cornerPx) : cornerPx;
+  if (inCalib) { run.hcIpd.push(ipdPx); run.hcCorner.push(cornerPx); if (prev) run.hcStep.push(d(head.sp, prev)); }
+  else if (inTest && run.headCal) {
+    const t = now - run.t0;
+    if (t >= 0) {
+      if (prev) { const k = run.headCal.cornerMm / head.cornerPx; run.hpos.x += (head.sp.x - prev.x) * k; run.hpos.y += (head.sp.y - prev.y) * k; }
+      run.ht.push(t); run.hx.push(run.hpos.x); run.hy.push(run.hpos.y); run.hv.push(1);
+    }
+  } else if (!run) {
+    const dot = $('headDot'); dot.classList.remove('hidden');
+    dot.style.left = (100 - mid.x / vw * 100) + '%'; dot.style.top = (mid.y / vh * 100) + '%';   // preview is mirrored
+    headMsg('Head found. 1 pixel ≈ ' + (pdMm() / ipdPx).toFixed(2) + ' mm at this distance.');
+  }
+}
+function calibrateHead(r) {
+  if (r.hcIpd.length < 10) return null;
+  const ipdPx = median(r.hcIpd), cornerPx = median(r.hcCorner), mmPerPx = r.pdMm / ipdPx;
+  const noiseMm = r.hcStep.length ? 1.4826 * median(r.hcStep) * mmPerPx : 0;
+  return { pdMm: r.pdMm, ipdPx, cornerPx, mmPerPx, cornerMm: cornerPx * mmPerPx, noiseMm, stepMm: Math.max(1, 4 * noiseMm), samples: r.hcIpd.length };
+}
+
 async function startCamera() {
   cam.wanted = true;
   if (cam.stream) return true;
@@ -316,11 +426,12 @@ async function startCamera() {
   el.camStatus.textContent = 'Camera on. Centre your head and shoulders in the dashed box.';
   cam.prev = null;
   cam.timer = setInterval(sampleMotion, CFG.sampleMs);
+  if ($('headChk').checked) { if (head.state === 'ready') scheduleHead(0); else loadHead(); }
   return true;
 }
 function stopCamera() {
   if (cam.timer) clearInterval(cam.timer);
-  cam.timer = null;
+  cam.timer = null; stopHead(); if (head.state === 'ready') headMsg('');
   if (cam.stream) cam.stream.getTracks().forEach(t => t.stop());
   cam.stream = null; cam.prev = null;
   el.video.srcObject = null; el.proc.srcObject = null;
@@ -403,8 +514,10 @@ function startRun(mode) {
     mode, planned: n, trials: buildSequence(n), startedAt: new Date().toISOString(),
     phase: hasCam ? 'calib' : 'countdown', hasCam, calib: [], cal: null,
     t0: 0, cur: -1, stimOn: false, mt: [], me: [], completed: 0, stoppedEarly: false, stopReason: null, wentFullscreen: false,
-    frameGaps: [], lastFrame: null, camInfo: null
+    frameGaps: [], lastFrame: null, camInfo: null,
+    headOn: hasCam && headWanted(), pdMm: pdMm(), hcIpd: [], hcCorner: [], hcStep: [], headCal: null, hpos: { x: 0, y: 0 }, ht: [], hx: [], hy: [], hv: []
   };
+  head.sp = null; $('headDot').classList.add('hidden');
   if (hasCam) { try { const st = cam.stream.getVideoTracks()[0].getSettings(); run.camInfo = { width: st.width, height: st.height, frameRate: st.frameRate }; } catch (e) {} }
   el.stim.style.visibility = 'hidden';
   show('stage');
@@ -422,6 +535,8 @@ function startRun(mode) {
 function beginTest() {
   if (!run) return;
   if (run.hasCam) run.cal = calibrate(run.calib);
+  if (run.headOn) run.headCal = calibrateHead(run);
+  head.sp = null;
   el.stageMsg.textContent = '';
   run.t0 = performance.now() + CFG.leadInMs;
   run.phase = 'test';
@@ -481,7 +596,8 @@ function finish(early, reason) {
 function analyze(r) {
   const n = r.completed, D = n * CFG.trialMs, qLen = D / 4;
   const mk = () => ({ trials: 0, targets: 0, nonTargets: 0, hits: 0, omissions: 0, commissions: 0, commissionsOnLures: 0, commissionsOnDifferent: 0, anticipatory: 0, extraPresses: 0, rts: [],
-                      mSamples: 0, mActive: 0, mScoreSum: 0, motionIndex: 0, bursts: 0 });
+                      mSamples: 0, mActive: 0, mScoreSum: 0, motionIndex: 0, bursts: 0,
+                      hSamples: 0, hValid: 0, hActive: 0, hDist: 0, hMicro: 0, hCells: new Set() });
   const Q = [mk(), mk(), mk(), mk()], all = mk();
   const qOf = t => Math.min(3, Math.max(0, Math.floor(t / qLen)));
   const trials = [];
@@ -521,6 +637,30 @@ function analyze(r) {
     }
     if (inBurst) closeBurst();
   }
+  // Head movement in millimetres
+  const headRep = { tracked: false, calibration: r.headCal, t: [], speedCm: [], lostPct: null, detectMs: head.costMs || null, delegate: head.delegate };
+  if (r.headCal && r.ht.length > 20) {
+    const step = r.headCal.stepMm, recent = [];
+    let anchor = null, lost = 0, total = 0;
+    for (let i = 0; i < r.ht.length; i++) {
+      const t = r.ht[i]; if (t >= D) break;
+      const bs = [Q[qOf(t)], all]; total++;
+      for (const b of bs) b.hSamples++;
+      if (!r.hv[i]) { lost++; anchor = null; recent.length = 0; continue; }
+      const x = r.hx[i], y = r.hy[i];
+      if (!anchor) anchor = { x, y };
+      const moved = Math.hypot(x - anchor.x, y - anchor.y);
+      if (moved >= step) { for (const b of bs) { b.hMicro++; b.hDist += moved; } anchor = { x, y }; }
+      // speed over roughly the last quarter second
+      recent.push({ t, x, y }); while (recent.length > 1 && t - recent[1].t >= 250) recent.shift();
+      const o = recent[0], dt = (t - o.t) / 1000, speed = dt >= 0.1 ? Math.hypot(x - o.x, y - o.y) / dt : 0;
+      const cell = Math.floor(x / HEAD.cellMm) + ',' + Math.floor(y / HEAD.cellMm);
+      for (const b of bs) { b.hValid++; if (speed >= HEAD.activeMmPerS) b.hActive++; b.hCells.add(cell); }
+      headRep.t.push(t); headRep.speedCm.push(speed / 10);
+    }
+    headRep.lostPct = total ? 100 * lost / total : null;
+    headRep.tracked = total > 20 && lost / total < 0.5;
+  }
   const fin = b => {
     const k = b.rts.length, mean = k ? b.rts.reduce((a, v) => a + v, 0) / k : null;
     const sd = k > 1 ? Math.sqrt(b.rts.reduce((a, v) => a + (v - mean) ** 2, 0) / (k - 1)) : null;
@@ -535,8 +675,14 @@ function analyze(r) {
       errorRatePct: b.trials ? 100 * (b.omissions + b.commissions) / b.trials : null,
       // d′ with log-linear correction so perfect scores stay finite
       dPrime: b.targets && b.nonTargets ? zInv((b.hits + 0.5) / (b.targets + 1)) - zInv((b.commissions + 0.5) / (b.nonTargets + 1)) : null,
-      motionIndex: null, activeTimePct: null, bursts: null, meanActivityScore: null
+      motionIndex: null, activeTimePct: null, bursts: null, meanActivityScore: null,
+      headDistanceM: null, headAreaCm2: null, headActivePct: null, headMicroEvents: null
     };
+    if (headRep.tracked) {
+      out.headDistanceM = b.hDist / 1000; out.headMicroEvents = b.hMicro;
+      out.headAreaCm2 = b.hCells.size * HEAD.cellMm * HEAD.cellMm / 100;
+      out.headActivePct = b.hValid ? 100 * b.hActive / b.hValid : null;
+    }
     if (motion.tracked) {
       out.motionIndex = b.motionIndex; out.bursts = b.bursts;
       out.activeTimePct = b.mSamples ? 100 * b.mActive / b.mSamples : null;
@@ -562,9 +708,10 @@ function analyze(r) {
   if (timing.maxOnsetLagMs > 40) timing.problems.push('a stimulus appeared ' + Math.round(timing.maxOnsetLagMs) + ' ms late');
   if (shown.length && (timing.minStimulusMs < 170 || timing.maxStimulusMs > 240)) timing.problems.push('stimulus time on screen ranged ' + Math.round(timing.minStimulusMs) + '–' + Math.round(timing.maxStimulusMs) + ' ms (target 200)');
   if (timing.motionSampleHz != null && timing.motionSampleHz < 8) timing.problems.push('the camera was sampled only ' + timing.motionSampleHz.toFixed(1) + ' times per second');
+  timing.headDetectMs = headRep.tracked ? headRep.detectMs : null;
   timing.valid = n > 0 && !timing.problems.length;
   return {
-    timing, camInfo: r.camInfo,
+    timing, camInfo: r.camInfo, head: headRep,
     mode: r.mode, startedAt: r.startedAt, plannedTrials: r.planned, completedTrials: n, durationMs: D,
     stoppedEarly: r.stoppedEarly, stopReason: r.stopReason,
     overall: fin(all), quartiles: Q.map(fin), trials, motion
@@ -591,9 +738,14 @@ const ROWS = [
   { label: 'Commission errors (false presses)', get: b => fmt.cntPct(b.commissions, b.commissionPct), raw: b => b.commissions },
   { label: 'Anticipatory responses (< 150 ms)', get: b => fmt.int(b.anticipatory), raw: b => b.anticipatory },
   { label: 'Multi-responses (extra presses in a trial)', get: b => fmt.int(b.extraPresses), raw: b => b.extraPresses },
-  { group: 'Activity' },
+  { group: 'Head movement (approximate centimetres)' },
+  { label: 'Distance travelled', get: b => b.headDistanceM == null ? '—' : b.headDistanceM < 1 ? (b.headDistanceM * 100).toFixed(1) + ' cm' : b.headDistanceM.toFixed(2) + ' m', raw: b => b.headDistanceM == null ? '' : (b.headDistanceM * 100).toFixed(2) },
+  { label: 'Area covered', get: b => b.headAreaCm2 == null ? '—' : b.headAreaCm2.toFixed(1) + ' cm²', raw: b => b.headAreaCm2 == null ? '' : b.headAreaCm2.toFixed(2) },
+  { label: 'Time active (faster than 1 cm/s)', get: b => fmt.pct(b.headActivePct), raw: b => b.headActivePct == null ? '' : b.headActivePct.toFixed(2) },
+  { label: 'Micro-movements (1 mm steps)', get: b => fmt.int(b.headMicroEvents), raw: b => b.headMicroEvents == null ? '' : b.headMicroEvents },
+  { group: 'Activity (image change)' },
   { label: 'Motion index (score × s)', get: b => fmt.f1(b.motionIndex), raw: b => b.motionIndex == null ? '' : b.motionIndex.toFixed(2) },
-  { label: 'Active time', get: b => fmt.pct(b.activeTimePct), raw: b => b.activeTimePct == null ? '' : b.activeTimePct.toFixed(2) },
+  { label: 'Active time (image change)', get: b => fmt.pct(b.activeTimePct), raw: b => b.activeTimePct == null ? '' : b.activeTimePct.toFixed(2) },
   { label: 'Micro-movement bursts', get: b => fmt.int(b.bursts), raw: b => b.bursts == null ? '' : b.bursts },
   { label: 'Mean activity score', get: b => fmt.f2(b.meanActivityScore), raw: b => b.meanActivityScore == null ? '' : b.meanActivityScore.toFixed(3) },
   { group: 'Accuracy' },
@@ -612,6 +764,8 @@ function renderResults(rep) {
   if (!rep.completedTrials) notes.push('No trials were completed, so there is nothing to score.');
   if (!rep.motion.tracked) notes.push('Camera was off, so activity metrics were not recorded.');
   else if (rep.motion.calibration.fallback) notes.push('Calibration got too few camera frames; a default movement threshold was used.');
+  if (rep.motion.tracked && !rep.head.tracked) notes.push(rep.head.calibration ? 'Head tracking lost your face for most of this run, so the centimetre measures were left out.' : 'Head measurement in centimetres was not available for this run (switched off, not loaded, or no face found during calibration).');
+  else if (rep.head.tracked && rep.head.lostPct > 10) notes.push('Head tracking lost your face for ' + rep.head.lostPct.toFixed(0) + '% of this run; the centimetre measures cover only the rest.');
   if (rep.mode === 'fast') notes.push('The fast test has about 37 targets and no time for fatigue to build, so it is less sensitive than the full 20 minutes. It is compared only with your other fast tests.');
   if (rep.mode === 'demo') notes.push('The demo has only a handful of targets — use it to check the mechanics, not as a measurement.');
   $('resNotes').innerHTML = notes.map(n => '<div class="note small">' + n + '</div>').join('');
@@ -619,10 +773,11 @@ function renderResults(rep) {
   const tm = rep.timing, r0 = v => v == null ? '—' : Math.round(v);
   $('qualVerdict').innerHTML = !rep.completedTrials ? 'No trials to check.'
     : tm.valid ? '<b>Timing check passed.</b> Every stimulus was drawn on schedule, so these numbers are a sound record of this run.'
-    : '<b>Timing check failed:</b> ' + tm.problems.join('; ') + '. Treat this run with caution — close other tabs and apps and repeat it.';
+    : '<b>Timing check failed:</b> ' + tm.problems.join('; ') + '. Treat this run with caution — close other tabs and apps and repeat it.' + (rep.head.calibration ? ' If it keeps failing, untick “Measure head movement in centimetres”: the face-tracking model may be too heavy for this computer.' : '');
   $('qualDetail').textContent = !rep.completedTrials ? '' : 'Display about ' + (tm.refreshHz || '—') + ' Hz · stimulus on screen ' + r0(tm.meanStimulusMs) + ' ms (range ' + r0(tm.minStimulusMs) + '–' + r0(tm.maxStimulusMs) +
     ') · onset lag mean ' + r0(tm.meanOnsetLagMs) + ' ms, max ' + r0(tm.maxOnsetLagMs) + ' ms · long frames ' + tm.longFrames +
-    (tm.motionSampleHz != null ? ' · camera sampled ' + tm.motionSampleHz.toFixed(1) + ' times per second' : '');
+    (tm.motionSampleHz != null ? ' · camera sampled ' + tm.motionSampleHz.toFixed(1) + ' times per second' : '') +
+    (rep.head.tracked ? ' · head tracking: 1 px = ' + rep.head.calibration.mmPerPx.toFixed(2) + ' mm, pupil distance ' + rep.head.calibration.pdMm + ' mm, jitter ' + rep.head.calibration.noiseMm.toFixed(2) + ' mm, step ' + rep.head.calibration.stepMm.toFixed(1) + ' mm' : '');
   const cols = [...rep.quartiles, rep.overall];
   let h = '<thead><tr><th>Metric</th><th>Q1</th><th>Q2</th><th>Q3</th><th>Q4</th><th class="overall">Overall</th></tr></thead><tbody>';
   for (const row of ROWS) {
@@ -659,9 +814,13 @@ function drawChart(rep) {
   // activity panel
   const bins = Math.max(10, Math.floor(PW / 2)), binMax = new Float32Array(bins);
   let yMax = 2;
-  if (rep.motion.tracked) {
-    const mt = rep.motion.t, ms = rep.motion.score;
-    for (let i = 0; i < mt.length; i++) { const b = Math.min(bins - 1, Math.floor(mt[i] / D * bins)); if (ms[i] > binMax[b]) binMax[b] = ms[i]; }
+  const useHead = rep.head.tracked;
+  $('legendSeries').textContent = useHead ? 'Head speed in cm per second (1 cm/s = active)' : 'Activity score (1.0 = movement threshold)';
+  if (useHead || rep.motion.tracked) {
+    const mt = useHead ? rep.head.t : rep.motion.t, ms = useHead ? rep.head.speedCm : rep.motion.score;
+    const seen = new Uint8Array(bins);
+    for (let i = 0; i < mt.length; i++) { const b = Math.min(bins - 1, Math.floor(mt[i] / D * bins)); seen[b] = 1; if (ms[i] > binMax[b]) binMax[b] = ms[i]; }
+    for (let b = 1; b < bins; b++) if (!seen[b]) binMax[b] = binMax[b - 1];   // short runs have more pixels than samples
     for (let b = 0; b < bins; b++) if (binMax[b] > yMax) yMax = binMax[b];
     yMax = Math.ceil(yMax);
     const y = v => T + PH - v / yMax * PH;
@@ -670,7 +829,7 @@ function drawChart(rep) {
     s += '<path class="area" d="' + path + 'L' + (L + PW) + ' ' + (T + PH) + 'L' + L + ' ' + (T + PH) + 'Z"/>';
     s += '<path class="line" d="' + path + '"/>';
     s += '<line class="thr" x1="' + L + '" x2="' + (L + PW) + '" y1="' + y(1) + '" y2="' + y(1) + '"/>';
-    s += '<text x="' + (L - 6) + '" y="' + (y(1) + 4) + '" text-anchor="end">threshold 1.0</text>';
+    s += '<text x="' + (L - 6) + '" y="' + (y(1) + 4) + '" text-anchor="end">' + (useHead ? '1 cm/s' : 'threshold 1.0') + '</text>';
     s += '<text x="' + (L - 6) + '" y="' + (T + 8) + '" text-anchor="end">' + yMax.toFixed(0) + '</text>';
     s += '<text x="' + (L - 6) + '" y="' + (T + PH + 4) + '" text-anchor="end">0</text>';
   } else {
@@ -694,19 +853,19 @@ function drawChart(rep) {
   s += '<line id="cross" class="cross" y1="' + T + '" y2="' + axY + '" x1="0" x2="0" visibility="hidden"/>';
   s += '<rect id="hit" x="' + L + '" y="' + T + '" width="' + PW + '" height="' + (axY - T) + '" fill="transparent"/>';
   svg.innerHTML = s;
-  chartState = { rep, L, PW, D, bins, binMax, W };
+  chartState = { rep, L, PW, D, bins, binMax, W, useHead };
 }
 
 function chartHover(ev) {
   if (!chartState) return;
-  const { rep, L, PW, D, bins, binMax } = chartState;
+  const { rep, L, PW, D, bins, binMax, useHead } = chartState;
   const box = el.chart.getBoundingClientRect(), px = ev.clientX - box.left;
   if (px < L || px > L + PW) { chartLeave(); return; }
   const t = (px - L) / PW * D, cross = $('cross');
   cross.setAttribute('x1', px); cross.setAttribute('x2', px); cross.setAttribute('visibility', 'visible');
   const trial = rep.trials.find(tr => tr.i === Math.min(rep.completedTrials - 1, Math.floor(t / CFG.trialMs)));
   let h = '<b>' + clock(t) + '</b> · Q' + (Math.min(3, Math.floor(t / (D / 4))) + 1);
-  if (rep.motion.tracked) h += '<br>Activity <b>' + binMax[Math.min(bins - 1, Math.floor(t / D * bins))].toFixed(2) + '</b>';
+  if (useHead || rep.motion.tracked) h += '<br>' + (useHead ? 'Head speed' : 'Activity') + ' <b>' + binMax[Math.min(bins - 1, Math.floor(t / D * bins))].toFixed(2) + (useHead ? ' cm/s' : '') + '</b>';
   if (trial) h += '<br>Trial ' + (trial.i + 1) + ': ' + trial.color + ' ' + trial.shape + ' (' + trial.type + ')<br>' + OUTCOME_LABEL[trial.outcome] + (trial.rt != null ? ' · <b>' + Math.round(trial.rt) + ' ms</b>' : '');
   el.tip.innerHTML = h; el.tip.classList.remove('hidden');
   const tw = el.tip.offsetWidth;
@@ -732,6 +891,8 @@ const CMP = [
   { key: 'commissionPct', label: 'Commission errors', unit: '%', dp: 1, tol: () => 1, focus: 'You made more false presses than usual. Next run, wait until you are sure both shape and color match.' },
   { key: 'anticipatory', label: 'Anticipatory responses', unit: '', dp: 1, tol: () => 0.5, focus: 'You had more too-early presses than usual. Next run, respond only after you have seen the shape.' },
   { key: 'activeTimePct', label: 'Active time', unit: '%', dp: 1, tol: () => 2, focus: 'You moved for more of the session than usual. Next run, settle your posture before starting.' },
+  { key: 'headDistanceM', label: 'Head distance', unit: ' m', dp: 2, tol: avg => Math.max(0.05, avg * 0.15), focus: 'Your head travelled further than usual. Next run, settle into a comfortable position before starting.' },
+  { key: 'headActivePct', label: 'Head time active', unit: '%', dp: 1, tol: () => 2, focus: 'Your head was in motion for more of the session than usual. Next run, settle into a comfortable position before starting.' },
   { key: 'motionIndex', label: 'Motion index', unit: '', dp: 1, tol: avg => Math.max(1, avg * 0.1), focus: 'Your overall movement was higher than usual. Next run, check your seat and camera are stable before starting.' }
 ];
 const num = (v, m) => v == null ? '—' : v.toFixed(m.unit === '' && Number.isInteger(v) ? 0 : m.dp) + m.unit;
@@ -821,6 +982,8 @@ function exportJSON() {
     summary: { overall: rep.overall, Q1: rep.quartiles[0], Q2: rep.quartiles[1], Q3: rep.quartiles[2], Q4: rep.quartiles[3] },
     trials: rep.trials.map(t => ({ trial: t.i + 1, timeMs: t.timeMs, quartile: t.quartile, shape: t.shape, color: t.color, type: t.type, isTarget: t.isTarget,
                                    responded: t.rt != null, rtMs: r1(t.rt), outcome: t.outcome, extraPresses: t.extraPresses, stimulusShownMs: r1(t.shownMs) })),
+    head: { tracked: rep.head.tracked, calibration: rep.head.calibration, lostPct: rep.head.lostPct, detectMs: rep.head.detectMs, delegate: rep.head.delegate,
+            perSecondMaxSpeedCm: (() => { const o = []; rep.head.t.forEach((t, i) => { const k = Math.floor(t / 1000); o[k] = Math.max(o[k] || 0, +rep.head.speedCm[i].toFixed(2)); }); return Array.from(o, v => v || 0); })() },
     motion: { tracked: rep.motion.tracked, calibration: rep.motion.calibration, bursts: rep.motion.bursts, perSecond }
   };
   download('attention-test-' + stamp(rep) + '.json', JSON.stringify(out, null, 2), 'application/json');
@@ -843,6 +1006,9 @@ function exportTrialsCSV() {
 
 /* ---------------- Events ---------------- */
 el.camBtn.addEventListener('click', () => { if (cam.stream) { cam.wanted = false; stopCamera(); el.camStatus.textContent = 'Camera off. The test will run without motion tracking.'; } else startCamera(); });
+$('headChk').addEventListener('change', () => { if (!$('headChk').checked) { stopHead(); headMsg(''); } else if (cam.stream) { if (head.state === 'ready') scheduleHead(0); else loadHead(); } });
+try { const v = localStorage.getItem(PD_KEY); if (v) $('pdInput').value = v; } catch (e) {}
+$('pdInput').addEventListener('change', () => { try { localStorage.setItem(PD_KEY, String(pdMm())); } catch (e) {} });
 $('demoBtn').addEventListener('click', () => startRun('demo'));
 $('fastBtn').addEventListener('click', () => startRun('fast'));
 $('fullBtn').addEventListener('click', () => startRun('full'));
