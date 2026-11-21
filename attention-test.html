@@ -78,6 +78,7 @@ ul.tight { margin: 0 0 10px; padding-left: 20px; }
 #stim.circle { border-radius: 50%; }
 #stim.red { background: #d62828; } #stim.blue { background: #1d4ed8; }
 #stageMsg { position: absolute; top: 50%; left: 0; right: 0; transform: translateY(-50%); text-align: center; color: #1c1c1c; font-size: 22px; font-weight: 600; padding: 0 20px; }
+#fb { position: absolute; left: 0; right: 0; top: calc(50% + min(24vmin, 190px)); text-align: center; color: #141414; font-size: 20px; font-weight: 600; padding: 0 16px; }
 #stageMsg small { display: block; font-size: 15px; font-weight: 400; margin-top: 8px; }
 #stopBtn { position: absolute; top: 12px; right: 12px; background: transparent; border-color: rgba(0,0,0,.25); color: rgba(0,0,0,.5); font-weight: 500; font-size: 12px; padding: 5px 10px; }
 #respBtn {
@@ -163,9 +164,13 @@ kbd { font: inherit; font-size: 12px; border: 1px solid var(--border); border-bo
         <li>One shape flashes every 2 seconds (shown for 0.2 s, then a blank screen).</li>
         <li>Sit so your head and shoulders fill the dashed box, about arm's length from the screen.</li>
         <li>The test opens with a few seconds of calibration — sit still while it measures your camera's baseline noise.</li>
+        <li><b>Every exact repeat counts.</b> If the same shape appears three times in a row, press on the second and again on the third.</li>
+        <li>Respond as quickly as you can while staying accurate. You have until the next shape appears.</li>
         <li>Press <kbd>Esc</kbd> or the Stop button to end early; you still get a report for what you completed.</li>
       </ul>
+      <p id="practiceMsg" class="note hidden"></p>
       <div class="row">
+        <button id="practiceBtn">Practice with Feedback</button>
         <button id="demoBtn">Run 30-Second Demo</button>
         <button id="fastBtn">Run Fast 5-Minute Test</button>
         <button id="fullBtn" class="primary">Run Full 20-Minute Test</button>
@@ -190,6 +195,7 @@ kbd { font: inherit; font-size: 12px; border: 1px solid var(--border); border-bo
 <div id="stage" class="hidden">
   <div id="stim"></div>
   <div id="stageMsg"></div>
+  <div id="fb" aria-live="polite"></div>
   <button id="stopBtn">Stop<span class="kbdhint"> (Esc)</span></button>
   <button id="respBtn" tabindex="-1">MATCH<span class="kbdhint"> (Space)</span></button>
 </div>
@@ -199,6 +205,11 @@ kbd { font: inherit; font-size: 12px; border: 1px solid var(--border); border-bo
   <h1>Results</h1>
   <p class="sub" id="resMeta"></p>
   <div id="resNotes"></div>
+
+  <div class="card">
+    <h2>At a glance</h2>
+    <ul class="tight" id="glance" style="margin:0"></ul>
+  </div>
 
   <div class="card">
     <h2>Measurement quality</h2>
@@ -305,6 +316,7 @@ const STIMS = [
 ]; // index bit0 = shape, bit1 = color
 
 const MODES = {
+  practice: { trials: 15, title: 'Practice', name: 'practice', short: 'Practice' },
   demo: { trials: CFG.demoTrials, title: '30-second demo', name: 'demo', short: 'Demo' },
   fast: { trials: CFG.fastTrials, title: 'Fast 5-minute test', name: 'fast-test', short: 'Fast' },
   full: { trials: CFG.fullTrials, title: 'Full 20-minute test', name: 'full-test', short: 'Full' }
@@ -499,10 +511,12 @@ function calibrate(samples) {
 
 /* ---------------- Trial sequence ---------------- */
 function shuffle(a) { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
-function buildSequence(n) {
+// Practice order: includes two runs of three identical shapes, the case people most often get wrong.
+const PRACTICE_TYPES = ['different', 'target', 'lure', 'different', 'target', 'target', 'lure', 'different', 'target', 'different', 'lure', 'target', 'target', 'different'];
+function buildSequence(n, fixedTypes) {
   // Exact 25% target / 25% lure / 50% different mix (of trials after the first), in shuffled order.
   const rest = n - 1, nT = Math.round(rest * 0.25), nL = Math.round(rest * 0.25);
-  const types = shuffle([...Array(nT).fill('target'), ...Array(nL).fill('lure'), ...Array(rest - nT - nL).fill('different')]);
+  const types = fixedTypes ? fixedTypes.slice() : shuffle([...Array(nT).fill('target'), ...Array(nL).fill('lure'), ...Array(rest - nT - nL).fill('different')]);
   let prev = Math.floor(Math.random() * 4);
   const seq = [{ i: 0, stim: prev, type: 'first' }];
   types.forEach((type, k) => {
@@ -530,9 +544,10 @@ function show(which) {
 
 function startRun(mode) {
   const n = MODES[mode].trials;
-  const hasCam = !!cam.stream;
+  const practice = mode === 'practice', hasCam = !practice && !!cam.stream;
+  $('practiceMsg').classList.add('hidden');
   run = {
-    mode, planned: n, trials: buildSequence(n), startedAt: new Date().toISOString(),
+    mode, planned: n, trials: buildSequence(n, practice ? PRACTICE_TYPES : null), startedAt: new Date().toISOString(),
     phase: hasCam ? 'calib' : 'countdown', hasCam, calib: [], cal: null,
     t0: 0, cur: -1, stimOn: false, mt: [], me: [], completed: 0, stoppedEarly: false, stopReason: null, wentFullscreen: false,
     frameGaps: [], lastFrame: null, camInfo: null,
@@ -546,7 +561,7 @@ function startRun(mode) {
   if (navigator.wakeLock) navigator.wakeLock.request('screen').then(w => { if (run) wake = w; else w.release(); }).catch(() => {});
   if (el.stage.requestFullscreen) el.stage.requestFullscreen().then(() => { if (run) run.wentFullscreen = true; }).catch(() => {});
   const waitMs = hasCam ? (mode === 'demo' ? CFG.demoCalibMs : CFG.calibMs) : CFG.noCamCountdownMs;
-  const title = hasCam ? 'Sit still — calibrating movement baseline' : 'Get ready';
+  const title = practice ? 'Practice round — you will get feedback on every press and every miss' : hasCam ? 'Sit still — calibrating movement baseline' : 'Get ready';
   for (let s = Math.ceil(waitMs / 1000); s >= 1; s--) {
     later(() => { el.stageMsg.innerHTML = title + '<small>Starting in ' + s + '…  Press only for an exact repeat.</small>'; }, waitMs - s * 1000);
   }
@@ -572,6 +587,8 @@ function frame() {
   if (elapsed >= 0) {
     const idx = Math.floor(elapsed / CFG.trialMs);
     if (idx !== run.cur) {
+      const last = run.trials[run.cur];
+      if (run.mode === 'practice' && last && last.isTarget && last.rt == null) feedback('Missed — that was an exact repeat');
       if (idx >= run.trials.length) { run.completed = run.trials.length; finish(false); return; }
       run.cur = idx;
       const t = run.trials[idx];
@@ -586,12 +603,29 @@ function frame() {
   requestAnimationFrame(frame);
 }
 
+let fbTimer = null;
+function feedback(text) { $('fb').textContent = text; clearTimeout(fbTimer); fbTimer = setTimeout(() => { $('fb').textContent = ''; }, 1400); }
+function pressFeedback(t) {
+  if (t.rt < CFG.anticipMs) return feedback('Too early — wait until you have seen the shape');
+  if (t.isTarget) return feedback('✓ Correct — exact repeat');
+  const prev = run.trials[t.i - 1];
+  feedback('✗ Not a match — ' + (!prev ? 'there was nothing before it to compare with' : t.type === 'different' ? 'shape and color both changed' : prev.shape !== t.shape ? 'the shape changed' : 'the color changed'));
+}
+function practiceSummary(r) {
+  const done = r.trials.slice(0, r.completed), targets = done.filter(t => t.isTarget), hits = targets.filter(t => t.rt != null && t.rt >= CFG.anticipMs);
+  const falsePresses = done.filter(t => !t.isTarget && t.rt != null).length;
+  const missedThird = targets.some(t => t.rt == null && t.i > 0 && r.trials[t.i - 1].isTarget);
+  const m = $('practiceMsg'); m.classList.remove('hidden');
+  m.textContent = !targets.length ? 'Practice stopped before the first repeat.' :
+    'Practice: you caught ' + hits.length + ' of ' + targets.length + ' exact repeats and made ' + falsePresses + ' false press' + (falsePresses === 1 ? '' : 'es') + '.' +
+    (missedThird ? ' Remember: when the same shape shows three times in a row, press for the second and for the third.' : hits.length === targets.length && !falsePresses ? ' You have the rule — ready for a real test.' : ' Try the practice again until it feels easy.');
+}
 function registerPress() {
   const now = performance.now();
   if (!run || run.phase !== 'test' || run.cur < 0) return;
   const t = run.trials[run.cur];
   if (t.onset == null) return;
-  if (t.rt == null) t.rt = now - t.onset; else t.extraPresses++;
+  if (t.rt == null) { t.rt = now - t.onset; if (run.mode === 'practice') pressFeedback(t); } else t.extraPresses++;
 }
 
 function finish(early, reason) {
@@ -602,6 +636,8 @@ function finish(early, reason) {
   el.stim.style.visibility = 'hidden'; el.stageMsg.textContent = '';
   if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
   if (wake) { wake.release().catch(() => {}); wake = null; }
+  clearTimeout(fbTimer); $('fb').textContent = '';
+  if (run.mode === 'practice') { practiceSummary(run); run = null; cam.prev = null; show('setup'); return; }
   if (!run.completed) { run = null; cam.prev = null; renderHistory(); show('setup'); return; }
   stopCamera();
   lastReport = analyze(run);
@@ -620,7 +656,8 @@ function analyze(r) {
   const mk = () => ({ trials: 0, targets: 0, nonTargets: 0, hits: 0, omissions: 0, commissions: 0, commissionsOnLures: 0, commissionsOnDifferent: 0, anticipatory: 0, extraPresses: 0, rts: [],
                       mSamples: 0, mActive: 0, mScoreSum: 0, motionIndex: 0, bursts: 0,
                       hSamples: 0, hValid: 0, hActive: 0, hDist: 0, hMicro: 0, hCells: new Set() });
-  const Q = [mk(), mk(), mk(), mk()], all = mk();
+  const Q = [mk(), mk(), mk(), mk()], all = mk(), late = mk();
+  const bk = q => q >= 1 ? [Q[q], all, late] : [Q[q], all];
   const qOf = t => Math.min(3, Math.max(0, Math.floor(t / qLen)));
   const trials = [];
   for (let i = 0; i < n; i++) {
@@ -631,7 +668,7 @@ function analyze(r) {
     if (t.rt != null && t.rt < CFG.anticipMs) t.outcome = 'anticipatory';
     else if (t.isTarget) t.outcome = t.rt == null ? 'omission' : 'hit';
     else t.outcome = t.rt == null ? 'correct_rejection' : 'commission';
-    for (const b of [Q[q], all]) {
+    for (const b of bk(q)) {
       b.trials++; b.extraPresses += t.extraPresses;
       if (t.isTarget) b.targets++; else b.nonTargets++;
       if (t.outcome === 'hit') { b.hits++; b.rts.push(t.rt); }
@@ -646,14 +683,14 @@ function analyze(r) {
   if (motion.tracked) {
     const base = r.cal.baseline, span = r.cal.threshold - r.cal.baseline;
     let inBurst = false, quiet = 0, bStart = 0, bEnd = 0, prevT = null;
-    const closeBurst = () => { motion.bursts.push({ startMs: Math.round(bStart), endMs: Math.round(bEnd) }); const q = qOf(bStart); Q[q].bursts++; all.bursts++; inBurst = false; };
+    const closeBurst = () => { motion.bursts.push({ startMs: Math.round(bStart), endMs: Math.round(bEnd) }); for (const b of bk(qOf(bStart))) b.bursts++; inBurst = false; };
     for (let i = 0; i < r.mt.length; i++) {
       const t = r.mt[i]; if (t >= D) break;
       const s = Math.max(0, r.me[i] - base) / span;
       const dt = Math.min(0.5, (prevT == null ? CFG.sampleMs : t - prevT) / 1000); prevT = t;
       motion.t.push(t); motion.score.push(s);
       const active = s >= 1;
-      for (const b of [Q[qOf(t)], all]) { b.mSamples++; b.mScoreSum += s; b.motionIndex += s * dt; if (active) b.mActive++; }
+      for (const b of bk(qOf(t))) { b.mSamples++; b.mScoreSum += s; b.motionIndex += s * dt; if (active) b.mActive++; }
       if (active) { if (!inBurst) { inBurst = true; bStart = t; } bEnd = t; quiet = 0; }
       else if (inBurst && ++quiet >= CFG.burstGapSamples) closeBurst();
     }
@@ -666,7 +703,7 @@ function analyze(r) {
     let anchor = null, lost = 0, total = 0;
     for (let i = 0; i < r.ht.length; i++) {
       const t = r.ht[i]; if (t >= D) break;
-      const bs = [Q[qOf(t)], all]; total++;
+      const bs = bk(qOf(t)); total++;
       for (const b of bs) b.hSamples++;
       if (!r.hv[i]) { lost++; anchor = null; recent.length = 0; continue; }
       const x = r.hx[i], y = r.hy[i];
@@ -736,7 +773,7 @@ function analyze(r) {
     timing, camInfo: r.camInfo, head: headRep,
     mode: r.mode, startedAt: r.startedAt, plannedTrials: r.planned, completedTrials: n, durationMs: D,
     stoppedEarly: r.stoppedEarly, stopReason: r.stopReason,
-    overall: fin(all), quartiles: Q.map(fin), trials, motion
+    overall: fin(all), quartiles: Q.map(fin), lastThreeQuarters: fin(late), trials, motion
   };
 }
 
@@ -792,6 +829,22 @@ function renderResults(rep) {
   if (rep.mode === 'demo') notes.push('The demo has only a handful of targets — use it to check the mechanics, not as a measurement.');
   $('resNotes').innerHTML = notes.map(n => '<div class="note small">' + n + '</div>').join('');
 
+  // Plain-language summary
+  const o = rep.overall, g = [];
+  if (rep.completedTrials) {
+    g.push('You caught <b>' + o.hits + ' of ' + o.targets + '</b> exact repeats and pressed wrongly on <b>' + o.commissions + ' of ' + o.nonTargets + '</b> other shapes' + (o.anticipatory ? ', with ' + o.anticipatory + ' too-early press' + (o.anticipatory === 1 ? '' : 'es') : '') + '.');
+    if (o.meanRtMs != null) g.push('Your average response took <b>' + Math.round(o.meanRtMs) + ' ms</b>' + (o.rtSdMs != null ? ', typically varying by about ' + Math.round(o.rtSdMs) + ' ms either way' : '') + '.');
+    // misses on a shape's third appearance in a row versus ordinary first repeats
+    const byI = new Map(rep.trials.map(t => [t.i, t])), tg = rep.trials.filter(t => t.isTarget && t.outcome !== 'anticipatory');
+    const b2b = tg.filter(t => byI.get(t.i - 1) && byI.get(t.i - 1).isTarget), first = tg.filter(t => !b2b.includes(t));
+    const mB = b2b.filter(t => t.outcome === 'omission').length, mF = first.filter(t => t.outcome === 'omission').length;
+    if (mB >= 2 && mB / b2b.length >= 2 * (mF + 1) / (first.length + 1)) g.push('<b>' + mB + ' of your ' + (mB + mF) + ' misses came when a shape appeared a third time in a row</b> (you missed ' + mB + ' of ' + b2b.length + ' of those, against ' + mF + ' of ' + first.length + ' ordinary repeats). Every exact repeat counts, so press again each time. The practice round covers this.');
+    const q = rep.quartiles, hf = (a, b, k) => q[a][k] == null || q[b][k] == null ? null : (q[a][k] + q[b][k]) / 2, o1 = hf(0, 1, 'omissionPct'), o2 = hf(2, 3, 'omissionPct');
+    if (rep.mode !== 'demo' && o1 != null && o2 - o1 > 10) g.push('You missed more in the second half than the first (' + o2.toFixed(0) + '% against ' + o1.toFixed(0) + '%).');
+    if (rep.head.tracked) g.push('Your head travelled about <b>' + (o.headDistanceM < 1 ? (o.headDistanceM * 100).toFixed(0) + ' cm' : o.headDistanceM.toFixed(1) + ' m') + '</b> and was moving ' + o.headActivePct.toFixed(0) + '% of the time.');
+    else if (rep.motion.tracked) g.push('The camera saw movement above your still baseline <b>' + o.activeTimePct.toFixed(0) + '%</b> of the time, in ' + o.bursts + ' separate burst' + (o.bursts === 1 ? '' : 's') + '.');
+  } else g.push('No trials were completed.');
+  $('glance').innerHTML = g.map(t => '<li>' + t + '</li>').join('');
   const tm = rep.timing, r0 = v => v == null ? '—' : Math.round(v);
   $('qualVerdict').innerHTML = !rep.completedTrials ? 'No trials to check.'
     : tm.valid ? '<b>Timing check passed.</b> Every stimulus was drawn on schedule, so these numbers are a sound record of this run.'
@@ -999,9 +1052,11 @@ const REF_ROWS = [
 const REF_KEY = 'attentionTest.refGroup';
 function referenceComparison(rep, group) {
   if (!REF[group] || rep.mode === 'demo' || !rep.completedTrials) return null;
-  const o = rep.overall, mine = Object.assign({}, o, { headDistance20: o.headDistanceM == null ? null : o.headDistanceM * 1200000 / rep.durationMs });
+  // the clinical 20-minute test is scored on its last 15 minutes, so the full test is compared the same way
+  const late = rep.mode === 'full', o = late ? rep.lastThreeQuarters : rep.overall, span = rep.durationMs * (late ? 0.75 : 1);
+  const mine = Object.assign({}, o, { headDistance20: o.headDistanceM == null ? null : o.headDistanceM * 1200000 / span });
   const z = (v, r) => v == null ? null : (v - r[0]) / r[1];
-  return { group, rows: REF_ROWS.map(m => ({ key: m.key, label: m.label, you: mine[m.key],
+  return { group, basis: late ? 'last three quarters of the test' : 'whole test', rows: REF_ROWS.map(m => ({ key: m.key, label: m.label, you: mine[m.key],
     clinicMean: REF[group].clinic[m.key][0], clinicSd: REF[group].clinic[m.key][1], clinicSds: z(mine[m.key], REF[group].clinic[m.key]),
     phoneMean: REF[group].phone[m.key][0], phoneSd: REF[group].phone[m.key][1], phoneSds: z(mine[m.key], REF[group].phone[m.key]) })) };
 }
@@ -1015,7 +1070,8 @@ function renderReference(rep) {
       : 'Choose a reference group to see how this session sits against published group averages.';
     return;
   }
-  msg.classList.add('hidden');
+  msg.classList.remove('hidden');
+  msg.textContent = rep.mode === 'full' ? 'Compared using the last three quarters of your test only, the way the clinical 20-minute test is scored (its first five minutes are treated as warm-up).' : 'Compared using your whole 5-minute run. The clinical test treats its first five minutes as warm-up, so expect this to look worse than a full test would.';
   const f = (v, m) => v == null ? '—' : v.toFixed(m.dp) + m.unit;
   const sds = v => { if (v == null) return '—'; const a = Math.abs(v), w = a <= 1 ? 'typical range' : (a <= 2 ? '' : 'well ') + (v > 0 ? 'above average' : 'below average'); return (v >= 0 ? '+' : '−') + a.toFixed(1) + ' · ' + w; };
   let h = '<thead><tr><th>Measure</th><th>You</th><th>Clinic group<br>average (spread)</th><th>SDs from average</th><th>Phone group<br>average (spread)</th><th class="overall">SDs from average</th></tr></thead><tbody>';
@@ -1085,6 +1141,7 @@ try { const v = localStorage.getItem(PD_KEY); if (v) $('pdInput').value = v; } c
 $('pdInput').addEventListener('change', () => { try { localStorage.setItem(PD_KEY, String(pdMm())); } catch (e) {} });
 try { const g = localStorage.getItem(REF_KEY); if (g && REF[g]) $('refSel').value = g; } catch (e) {}
 $('refSel').addEventListener('change', () => { try { localStorage.setItem(REF_KEY, $('refSel').value); } catch (e) {} if (lastReport) renderReference(lastReport); });
+$('practiceBtn').addEventListener('click', () => startRun('practice'));
 $('demoBtn').addEventListener('click', () => startRun('demo'));
 $('fastBtn').addEventListener('click', () => startRun('fast'));
 $('fullBtn').addEventListener('click', () => startRun('full'));
